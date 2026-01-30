@@ -1,9 +1,61 @@
 basePath: /
+definitions:
+  v1.Request:
+    properties:
+      name:
+        type: string
+    type: object
+  v1.Response:
+    properties:
+      greeting:
+        type: string
+    type: object
 host: localhost:8080
 info:
   contact: {}
   description: Minimal Go HTTP server.
   title: Maelstrom API
   version: 1.0.0
-paths: {}
+paths:
+  /:
+    get:
+      description: Returns hello message
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: Hello, Maelstrom!
+          schema:
+            type: string
+      summary: Root endpoint
+  /api/v1/greet:
+    post:
+      consumes:
+      - application/json
+      description: Greet user by name
+      parameters:
+      - description: User name
+        in: body
+        name: name
+        required: true
+        schema:
+          $ref: '#/definitions/v1.Request'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: greeting
+          schema:
+            $ref: '#/definitions/v1.Response'
+        "400":
+          description: Invalid JSON
+          schema:
+            type: string
+        "405":
+          description: Method not allowed
+          schema:
+            type: string
+      summary: Greet user
+      tags:
+      - api
 swagger: "2.0"
