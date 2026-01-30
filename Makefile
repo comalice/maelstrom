@@ -1,7 +1,7 @@
 # Makefile for Maelstrom
 # Run from project root (maelstrom/)
 
-.PHONY: all build run test lint tidy swagger clean install-deps
+.PHONY: all build run test lint tidy swagger clean install-deps test-e2e
 
 all: tidy lint test swagger build
 
@@ -31,3 +31,6 @@ clean:
 install-deps:
 	go install github.com/swaggo/swag/cmd/swag@latest
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+test-e2e: build
+	./e2e_tests.sh

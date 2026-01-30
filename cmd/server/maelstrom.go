@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/comalice/maelstrom/registry"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
@@ -29,6 +30,19 @@ func main() {
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	slog.Info("Starting server", "addr", cfg.ListenAddr)
+
+	if cfg.RegistryDir == "" {
+		cfg.RegistryDir = "./yaml"
+	}
+	if err := os.MkdirAll(cfg.RegistryDir, 0755); err != nil {
+		slog.Error("failed to create registry dir", "error", err)
+		os.Exit(1)
+	}
+	reg := registry.New()
+	if err := reg.InitWatcher(cfg.RegistryDir); err != nil {
+		slog.Error("failed to init registry watcher", "error", err)
+		os.Exit(1)
+	}
 
 	r := chi.NewRouter()
 
