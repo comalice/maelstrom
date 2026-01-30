@@ -23,7 +23,7 @@ tidy:
 	go mod tidy
 
 swagger:
-	swag init -g ./cmd/server/maelstrom.go -d .
+	swag init -g ./cmd/server/maelstrom.go
 
 clean:
 	rm -rf bin/ docs/swagger*.json docs/swagger*.go
