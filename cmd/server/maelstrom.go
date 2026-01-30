@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"os"
 
 	"github.com/comalice/maelstrom/config"
@@ -28,11 +30,17 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	slog.Info("Starting server", "addr", cfg.ListenAddr)
 
+	r := chi.NewRouter()
+
+	// Optional: Basic middleware for logging and panic recovery
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+
 	// @Summary Root endpoint
 	// @Description Returns hello message
 	// @Produce text/plain
 	// @Success 200 {string} string "Hello, Maelstrom!"
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "Hello, Maelstrom!")
 	})
 
@@ -45,12 +53,7 @@ func main() {
 	// @Success 200 {object} map[string]string "greeting"
 	// @Failure 400 {string} string "Invalid JSON"
 	// @Failure 405 {string} string "Method not allowed"
-	http.HandleFunc("/api/v1/greet", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
+	r.Post("/api/v1/greet", func(w http.ResponseWriter, r *http.Request) {
 		type Request struct {
 			Name string `json:"name"`
 		}
@@ -73,15 +76,15 @@ func main() {
 	})
 
 	// Swagger UI
-	http.HandleFunc("/swagger/doc.json", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "../docs/swagger.json")
+	r.Get("/swagger/doc.json", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "/home/albert/git/maelstrom-stillpoint/maelstrom/docs/swagger.json")
 	})
-	http.Handle("/swagger/", httpSwagger.Handler(
+	r.Mount("/swagger/", httpSwagger.Handler(
 		httpSwagger.URL("/swagger/doc.json"),
 		httpSwagger.DeepLinking(true),
 	))
 
-	if err := http.ListenAndServe(cfg.ListenAddr, nil); err != nil {
+	if err := http.ListenAndServe(cfg.ListenAddr, r); err != nil {
 		slog.Error("failed to start server", "error", err)
 		os.Exit(1)
 	}

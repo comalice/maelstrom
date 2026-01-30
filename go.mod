@@ -3,6 +3,7 @@ module github.com/comalice/maelstrom
 go 1.25.6
 
 require (
+	github.com/go-chi/chi/v5 v5.2.4
 	github.com/kelseyhightower/envconfig v1.4.0
 	github.com/swaggo/http-swagger v1.3.4
 	github.com/swaggo/swag v1.8.1
