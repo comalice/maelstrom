@@ -77,9 +77,70 @@ const docTemplate = `{
                     }
                 }
             }
+        },
+        "/api/v1/import/{filename}": {
+            "post": {
+                "description": "Manual import",
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "Import YAML",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filename",
+                        "name": "filename",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/yamls": {
+            "get": {
+                "description": "List registry",
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "List YAMLs",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/registry.YAMLImport"
+                            }
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
+        "registry.YAMLImport": {
+            "type": "object",
+            "properties": {
+                "active": {
+                    "type": "boolean"
+                },
+                "content": {
+                    "type": "object",
+                    "additionalProperties": true
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
         "v1.Request": {
             "type": "object",
             "properties": {

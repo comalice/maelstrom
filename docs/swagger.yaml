@@ -1,5 +1,15 @@
 basePath: /
 definitions:
+  registry.YAMLImport:
+    properties:
+      active:
+        type: boolean
+      content:
+        additionalProperties: true
+        type: object
+      version:
+        type: string
+    type: object
   v1.Request:
     properties:
       name:
@@ -58,4 +68,34 @@ paths:
       summary: Greet user
       tags:
       - api
+  /api/v1/import/{filename}:
+    post:
+      description: Manual import
+      parameters:
+      - description: Filename
+        in: path
+        name: filename
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      summary: Import YAML
+  /api/v1/yamls:
+    get:
+      description: List registry
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/registry.YAMLImport'
+            type: array
+      summary: List YAMLs
 swagger: "2.0"
