@@ -16,7 +16,7 @@ func ParseFile(path string) (map[string]interface{}, string, error) {
 		return nil, "", err
 	}
 	var content map[string]interface{}
-	if err := yaml.Unmarshal(data, content); err != nil {
+	if err := yaml.Unmarshal(data, &content); err != nil {
 		return nil, "", err
 	}
 	name := filepath.Base(path)
