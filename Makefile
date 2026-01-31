@@ -5,9 +5,6 @@
 
 all: tidy lint test swagger build
 
-build:
-	go build -o bin/server ./cmd/server
-
 run:
 	LISTEN_ADDR=:8090 go run ./cmd/server/maelstrom.go
 
@@ -24,6 +21,9 @@ tidy:
 
 swagger:
 	swag init -g ./cmd/server/maelstrom.go
+
+build: swagger
+	go build -o bin/server ./cmd/server
 
 clean:
 	rm -rf bin/ docs/swagger*.json docs/swagger*.go
