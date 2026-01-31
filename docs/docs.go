@@ -104,6 +104,26 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/raw-yamls": {
+            "get": {
+                "description": "List registry raw contents (unrendered)",
+                "produces": [
+                    "application/json"
+                ],
+                "summary": "List Raw YAMLs",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/registry.RawYAML"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/yamls": {
             "get": {
                 "description": "List registry",
@@ -126,6 +146,20 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "registry.RawYAML": {
+            "type": "object",
+            "properties": {
+                "active": {
+                    "type": "boolean"
+                },
+                "raw": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
         "registry.YAMLImport": {
             "type": "object",
             "properties": {

@@ -1,5 +1,14 @@
 basePath: /
 definitions:
+  registry.RawYAML:
+    properties:
+      active:
+        type: boolean
+      raw:
+        type: string
+      version:
+        type: string
+    type: object
   registry.YAMLImport:
     properties:
       active:
@@ -85,6 +94,19 @@ paths:
           schema:
             type: string
       summary: Import YAML
+  /api/v1/raw-yamls:
+    get:
+      description: List registry raw contents (unrendered)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/registry.RawYAML'
+            type: array
+      summary: List Raw YAMLs
   /api/v1/yamls:
     get:
       description: List registry

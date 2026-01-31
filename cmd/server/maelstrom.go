@@ -65,6 +65,7 @@ func main() {
 		os.Exit(1)
 	}
 	reg := registry.New()
+	reg.SetConfig(&cfg)
 	if err := reg.InitWatcher(cfg.RegistryDir); err != nil {
 		slog.Error("failed to init registry watcher", "error", err)
 		os.Exit(1)

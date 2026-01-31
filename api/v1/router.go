@@ -9,6 +9,7 @@ func Router() chi.Router {
 	r := chi.NewRouter()
 	r.Post("/greet", GreeterHandler)
 	r.Get("/yamls", ListYamlsHandler)
+	r.Get("/raw-yamls", ListRawYamlsHandler)
 	r.Post("/import/{filename}", ImportYamlHandler)
 	return r
 }

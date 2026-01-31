@@ -34,3 +34,14 @@ func ImportYamlHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "imported"})
 }
+
+// @Summary List Raw YAMLs
+// @Description List registry raw contents (unrendered)
+// @Produce json
+// @Success 200 {array} registry.RawYAML
+// @Router /api/v1/raw-yamls [GET]
+func ListRawYamlsHandler(w http.ResponseWriter, r *http.Request) {
+	list := registry.GlobalRegistry.ListRaw()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(list)
+}
