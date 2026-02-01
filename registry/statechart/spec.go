@@ -56,19 +56,34 @@ func ParseSpec(data []byte) (*YamlMachineSpec, error) {
 	return &spec, nil
 }
 
-// ToMachine builds statechartx.Machine from spec using public builder.
+type AugmentedMachine struct {
+	Machine        *statechartx.Machine
+	StatePathByID  map[statechartx.StateID]string
+	StateIDByPath  map[string]statechartx.StateID
+	EventIDByName  map[string]statechartx.EventID
+	EventNameByID  map[statechartx.EventID]string
+}
+
+// ToAugmentedMachine builds statechartx.Machine from spec and adds ID/name mappings.
 // Resolves guards/actions as stubs (extend with expr eval, registry, LLM).
-func (s *YamlMachineSpec) ToMachine() (*statechartx.Machine, error) {
+func (s *YamlMachineSpec) ToAugmentedMachine() (*AugmentedMachine, error) {
 	if _, ok := s.Machine.States[s.Machine.Initial]; !ok {
 		return nil, fmt.Errorf("initial state %q not found", s.Machine.Initial)
 	}
 
-	b := statechartx.NewMachineBuilder(s.Machine.ID, s.Machine.Initial)
+	initialFullpath := s.Machine.ID + "." + s.Machine.Initial
+	b := statechartx.NewMachineBuilder(s.Machine.ID, initialFullpath)
+	b.State(s.Machine.ID).Compound(initialFullpath)
 
-	if err := s.declareRecursive(b, s.Machine.States, ""); err != nil {
+	statesSeen := make(map[string]struct{})
+	statesSeen[s.Machine.ID] = struct{}{}
+	eventsSeen := make(map[string]struct{})
+
+	if err := s.declareRecursive(b, s.Machine.States, s.Machine.ID, &statesSeen); err != nil {
 		return nil, fmt.Errorf("declareRecursive: %w", err)
 	}
-	if err := s.configureRecursive(b, s.Machine.States, ""); err != nil {
+	statesSeen[initialFullpath] = struct{}{}
+	if err := s.configureRecursive(b, s.Machine.States, s.Machine.ID, &eventsSeen); err != nil {
 		return nil, fmt.Errorf("configureRecursive: %w", err)
 	}
 
@@ -76,16 +91,44 @@ func (s *YamlMachineSpec) ToMachine() (*statechartx.Machine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("builder build: %w", err)
 	}
-	return m, nil
+
+	aug := &AugmentedMachine{
+		Machine:       m,
+		StatePathByID: make(map[statechartx.StateID]string),
+		StateIDByPath: make(map[string]statechartx.StateID),
+		EventIDByName: make(map[string]statechartx.EventID),
+		EventNameByID: make(map[statechartx.EventID]string),
+	}
+	for path := range statesSeen {
+		id := b.GetID(path)
+		aug.StateIDByPath[path] = id
+		aug.StatePathByID[id] = path
+	}
+	for evt := range eventsSeen {
+		internalKey := "event:" + evt
+		eid := b.GetID(internalKey)
+		aug.EventIDByName[evt] = statechartx.EventID(eid)
+		aug.EventNameByID[statechartx.EventID(eid)] = evt
+	}
+	return aug, nil
+}
+
+func (s *YamlMachineSpec) ToMachine() (*statechartx.Machine, error) {
+	aug, err := s.ToAugmentedMachine()
+	if err != nil {
+		return nil, err
+	}
+	return aug.Machine, nil
 }
 
 // declareRecursive declares states recursively using dot-notation hierarchy (e.g. "parent.child").
-func (s *YamlMachineSpec) declareRecursive(b *statechartx.MachineBuilder, states map[string]YamlState, prefix string) error {
+func (s *YamlMachineSpec) declareRecursive(b *statechartx.MachineBuilder, states map[string]YamlState, prefix string, statesSeen *map[string]struct{}) error {
 	for id, st := range states {
 		fullpath := id
 		if prefix != "" {
 			fullpath = prefix + "." + id
 		}
+		(*statesSeen)[fullpath] = struct{}{}
 		sb := b.State(fullpath)
 
 		if len(st.States) > 0 {
@@ -102,7 +145,7 @@ func (s *YamlMachineSpec) declareRecursive(b *statechartx.MachineBuilder, states
 			sb.Parallel()
 		}
 		// Recurse children
-		if err := s.declareRecursive(b, st.States, fullpath); err != nil {
+		if err := s.declareRecursive(b, st.States, fullpath, statesSeen); err != nil {
 			return err
 		}
 	}
@@ -111,7 +154,7 @@ func (s *YamlMachineSpec) declareRecursive(b *statechartx.MachineBuilder, states
 
 
 // configureRecursive configures transitions and timeouts recursively.
-func (s *YamlMachineSpec) configureRecursive(b *statechartx.MachineBuilder, states map[string]YamlState, prefix string) error {
+func (s *YamlMachineSpec) configureRecursive(b *statechartx.MachineBuilder, states map[string]YamlState, prefix string, eventsSeen *map[string]struct{}) error {
 	for id, st := range states {
 		fullpath := id
 		if prefix != "" {
@@ -127,15 +170,20 @@ func (s *YamlMachineSpec) configureRecursive(b *statechartx.MachineBuilder, stat
 		}
 
 		for evt, trans := range st.On {
+			(*eventsSeen)[evt] = struct{}{}
 			targetFull := trans.Target
-			if prefix != "" && !strings.Contains(trans.Target, ".") && trans.Target != fullpath {
-				targetFull = prefix + "." + trans.Target
+			if !strings.HasPrefix(trans.Target, s.Machine.ID+".") {
+				if strings.Contains(trans.Target, ".") {
+					targetFull = s.Machine.ID + "." + trans.Target
+				} else if prefix != "" && trans.Target != fullpath {
+					targetFull = prefix + "." + trans.Target
+				}
 			}
 			guard := s.resolveGuard(trans.Guard)
 			action := s.resolveAction(trans.Action)
 			sb.On(evt, targetFull, guard, action)
 		}
-		if err := s.configureRecursive(b, st.States, fullpath); err != nil {
+		if err := s.configureRecursive(b, st.States, fullpath, eventsSeen); err != nil {
 			return err
 		}
 	}

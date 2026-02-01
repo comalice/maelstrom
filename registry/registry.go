@@ -9,31 +9,36 @@ import (
 
 	"github.com/comalice/maelstrom/config"
 	"github.com/comalice/maelstrom/registry/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 	"github.com/fsnotify/fsnotify"
+	yamlv3 "gopkg.in/yaml.v3"
+
+	"github.com/comalice/maelstrom/registry/statechart"
 )
 
 type YAMLImport struct {
-	Content map[string]interface{} `json:"content"`
-	Version string                 `json:"version"`
-	Active  bool                   `json:"active"`
-	Raw     string                 `json:"-"`
+	Content             map[string]interface{}       `json:"content"`
+	Version             string                       `json:"version"`
+	Active              bool                         `json:"active"`
+	Filename            string                       `json:"filename"`
+	Type                string                       `json:"type,omitempty"`
+	StatechartAugmented *statechart.AugmentedMachine `json:"-"`
+	Raw                 string                       `json:"-"`
 }
 
 type RawYAML struct {
-	Raw    string `json:"raw"`
+	Raw     string `json:"raw"`
 	Version string `json:"version"`
-	Active bool   `json:"active"`
+	Active  bool   `json:"active"`
 }
 
 type Registry struct {
-	mu      sync.RWMutex
-	items   map[string]*YAMLImport
-	watcher *fsnotify.Watcher
-	stop    chan struct{}
-	dir     string // Track watch dir
-	Config  *config.AppConfig `json:"-"`
-	Env     map[string]string `json:"-"`
+	mu       sync.RWMutex
+	items    map[string]*YAMLImport
+	watcher  *fsnotify.Watcher
+	stop     chan struct{}
+	dir      string                          // Track watch dir
+	Config   *config.AppConfig               `json:"-"`
+	Env      map[string]string               `json:"-"`
 	resolver *config.ConfigHierarchyResolver `json:"-"`
 }
 
@@ -58,6 +63,22 @@ func (r *Registry) SetConfig(cfg *config.AppConfig) {
 	r.resolver = config.NewResolver(r.Config)
 }
 
+func (r *Registry) scanDir() error {
+	files, err := filepath.Glob(filepath.Join(r.dir, "*.{yaml,yml}"))
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		name := filepath.Base(f)
+		if err := r.Import(name); err != nil {
+			slog.Warn("initial import failed", "file", name, "err", err)
+		} else {
+			slog.Info("initial import", "file", name)
+		}
+	}
+	return nil
+}
+
 func (r *Registry) InitWatcher(dir string) error {
 	r.dir = dir
 	w, err := fsnotify.NewWatcher()
@@ -67,6 +88,9 @@ func (r *Registry) InitWatcher(dir string) error {
 	if err := w.Add(dir); err != nil {
 		w.Close()
 		return err
+	}
+	if err := r.scanDir(); err != nil {
+		slog.Warn("scan dir failed", "err", err)
 	}
 	r.watcher = w
 	GlobalRegistry = r
@@ -84,8 +108,8 @@ func (r *Registry) watch() {
 			}
 			name := filepath.Base(event.Name)
 			matchYAML, _ := filepath.Match("*.yaml", name)
-	matchYML, _ := filepath.Match("*.yml", name)
-	if !matchYAML && !matchYML {
+			matchYML, _ := filepath.Match("*.yml", name)
+			if !matchYAML && !matchYML {
 				continue
 			}
 			if event.Op&fsnotify.Create != 0 || event.Op&fsnotify.Write != 0 {
@@ -95,7 +119,7 @@ func (r *Registry) watch() {
 					continue
 				}
 				r.mu.Lock()
-				r.items[name] = &YAMLImport{Raw: raw, Version: ver, Active: true}
+				r.items[name] = &YAMLImport{Raw: raw, Version: ver, Active: true, Filename: name}
 				r.mu.Unlock()
 				slog.Info("imported raw", "file", name, "ver", ver)
 			} else if event.Op&fsnotify.Remove != 0 || event.Op&fsnotify.Rename != 0 {
@@ -127,14 +151,15 @@ func (r *Registry) List() []*YAMLImport {
 	list := make([]*YAMLImport, 0, len(r.items))
 	for _, item := range r.items {
 		newItem := &YAMLImport{
-			Version: item.Version,
-			Active:  item.Active,
-			Raw:     item.Raw,
+			Version:  item.Version,
+			Active:   item.Active,
+			Filename: item.Filename,
+			Raw:      item.Raw,
 		}
 		if newItem.Raw != "" {
 			if r.Config != nil {
 				type renderData struct {
-					Config *config.AppConfig  `json:"-"`
+					Config *config.AppConfig `json:"-"`
 					Env    map[string]string `json:"-"`
 				}
 				var data renderData
@@ -157,6 +182,20 @@ func (r *Registry) List() []*YAMLImport {
 			res := r.resolver.Resolve(newItem.Content, nil, nil)
 			newItem.Content["resolved"] = config.ToResolvedMap(res)
 		}
+
+		// Attempt to parse as statechart
+		spec, perr := statechart.ParseSpec([]byte(newItem.Raw))
+		if perr == nil && spec.Machine.ID != "" {
+			newItem.Type = "statechart"
+			aug, merr := spec.ToAugmentedMachine()
+			if merr == nil {
+				newItem.StatechartAugmented = aug
+			} else {
+				slog.Warn("statechart ToAugmentedMachine failed", "file", newItem.Filename, "err", merr)
+			}
+		} else {
+			newItem.Type = "yaml"
+		}
 		list = append(list, newItem)
 	}
 	return list
@@ -168,9 +207,9 @@ func (r *Registry) ListRaw() []RawYAML {
 	list := make([]RawYAML, 0, len(r.items))
 	for _, item := range r.items {
 		list = append(list, RawYAML{
-			Raw:    item.Raw,
+			Raw:     item.Raw,
 			Version: item.Version,
-			Active: item.Active,
+			Active:  item.Active,
 		})
 	}
 	return list
@@ -183,7 +222,7 @@ func (r *Registry) Import(filename string) error {
 		return err
 	}
 	r.mu.Lock()
-	r.items[filename] = &YAMLImport{Raw: raw, Version: ver, Active: true}
+	r.items[filename] = &YAMLImport{Raw: raw, Version: ver, Active: true, Filename: filename}
 	r.mu.Unlock()
 	slog.Info("manual import raw", "file", filename, "ver", ver)
 	return nil

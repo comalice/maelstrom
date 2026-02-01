@@ -170,6 +170,12 @@ const docTemplate = `{
                     "type": "object",
                     "additionalProperties": true
                 },
+                "filename": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                },
                 "version": {
                     "type": "string"
                 }

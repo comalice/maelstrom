@@ -11,5 +11,6 @@ func Router() chi.Router {
 	r.Get("/yamls", ListYamlsHandler)
 	r.Get("/raw-yamls", ListRawYamlsHandler)
 	r.Post("/import/{filename}", ImportYamlHandler)
+	r.Mount("/statecharts", StatechartsRouter())
 	return r
 }

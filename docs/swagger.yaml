@@ -16,6 +16,10 @@ definitions:
       content:
         additionalProperties: true
         type: object
+      filename:
+        type: string
+      type:
+        type: string
       version:
         type: string
     type: object

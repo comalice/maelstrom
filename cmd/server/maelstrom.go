@@ -18,7 +18,7 @@ import (
 	"github.com/comalice/maelstrom/registry"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-
+	
 	v1 "github.com/comalice/maelstrom/api/v1"
 	"github.com/comalice/maelstrom/config"
 	swagger "github.com/comalice/maelstrom/swagger"
@@ -70,6 +70,15 @@ func main() {
 		slog.Error("failed to init registry watcher", "error", err)
 		os.Exit(1)
 	}
+
+	items := reg.List()
+	var machines []string
+	for _, item := range items {
+		if item.Type == "statechart" && item.Active && strings.HasSuffix(item.Filename, ".yaml") {
+			machines = append(machines, strings.TrimSuffix(item.Filename, ".yaml"))
+		}
+	}
+	slog.Info("statecharts loaded on startup", "count", len(machines), "machines", machines)
 
 	r := chi.NewRouter()
 

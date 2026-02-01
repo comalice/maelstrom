@@ -1,0 +1,11 @@
+name: trafficlight
+version: 1.0
+machine:
+  id: root
+  initial: green
+  states:
+    green:
+      on:
+        next:
+          target: red
+    red: {}

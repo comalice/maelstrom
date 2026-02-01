@@ -191,7 +191,191 @@ EOF
   echo "✓ Template rendering test passed"
 }
 
+test_statecharts() {
+  local test_port=8085
+  local test_dir=$(mktemp -d -t maelstrom_test_statecharts_XXXXXX)
+  export REGISTRY_DIR="$test_dir"
+  export LISTEN_ADDR=":$test_port"
+  if [ $VERBOSE = 1 ]; then
+    ./bin/server &
+  else
+    ./bin/server >/dev/null 2>&1 &
+  fi
+  SERVER_PID=$!
+  sleep 0.5
+  wait_ready "$test_port" || { echo "Server not ready on $test_port"; kill $SERVER_PID; false; }
+
+  # Initial statecharts list empty
+  local response
+  response=$(curl -fs "http://localhost:$test_port/api/v1/statecharts" || echo '[]')
+  [ $VERBOSE = 1 ] && echo "=== initial statecharts ===" && echo "$response" | jq '.'
+  if ! echo "$response" | jq -e 'length == 0' >/dev/null 2>&1; then echo "❌ initial statecharts failed"; kill $SERVER_PID; false; fi
+
+  # Create minimal trafficlight.yaml (raw events only)
+  cat > "$test_dir/trafficlight.yaml" << 'EOF'
+name: trafficlight
+version: 1.0
+machine:
+  id: root
+  initial: green
+  states:
+    green:
+      on:
+        next:
+          target: red
+    red: {}
+EOF
+  sleep 2  # Wait watcher
+
+  # List shows trafficlight
+  response=$(curl -fs "http://localhost:$test_port/api/v1/statecharts" || echo '[]')
+  [ $VERBOSE = 1 ] && echo "=== statecharts list ===" && echo "$response" | jq '.'
+  if ! echo "$response" | jq -e 'length == 1 and .[0] == "trafficlight"' >/dev/null 2>&1; then echo "❌ statecharts list failed"; kill $SERVER_PID; false; fi
+
+  # Create instance → root.green
+  response=$(curl -fs -X POST -H "Content-Type: application/json" -d '{}' "http://localhost:$test_port/api/v1/statecharts/trafficlight/instances")
+  [ $VERBOSE = 1 ] && echo "=== create instance ===" && echo "$response" | jq '.'
+  if ! echo "$response" | jq -e 'has("id") and (.id | startswith("i")) and .current == "root.green"' >/dev/null 2>&1; then echo "❌ create instance failed"; kill $SERVER_PID; false; fi
+  local inst_id=$(echo "$response" | jq -r '.id')
+
+  # Send "next" → root.red
+  response=$(curl -fs -X POST -H "Content-Type: application/json" -d '{"type": "next"}' "http://localhost:$test_port/api/v1/statecharts/trafficlight/instances/$inst_id/events")
+  [ $VERBOSE = 1 ] && echo "=== send next event ===" && echo "$response" | jq '.'
+  if ! echo "$response" | jq -e '.current == "root.red"' >/dev/null 2>&1; then echo "❌ next event failed (no real transition)"; kill $SERVER_PID; false; fi
+
+  kill "$SERVER_PID" || true
+  echo "✓ Statecharts API test passed"
+}
+
+test_nested_compound() {
+  local test_port=8086
+  local test_dir=$(mktemp -d -t maelstrom_test_nested_XXXXXX)
+  export REGISTRY_DIR="$test_dir"
+  export LISTEN_ADDR=":$test_port"
+  ./bin/server >/dev/null 2>&1 &
+  SERVER_PID=$!
+  sleep 0.5
+  wait_ready "$test_port" || { echo "Server not ready"; kill $SERVER_PID; false; }
+
+  cat > "$test_dir/nested.yaml" << 'EOF'
+name: nested
+version: 1.0
+machine:
+  id: root
+  initial: parent
+  states:
+    parent:
+      initial: child1
+      states:
+        child1:
+          on:
+            next:
+              target: child2
+        child2: {}
+EOF
+  sleep 2
+
+  response=$(curl -fs "http://localhost:$test_port/api/v1/statecharts" || echo '[]')
+  [ $VERBOSE = 1 ] && echo "=== nested list ===" && echo "$response" | jq '.'
+  echo "$response" | jq -e 'length == 1 and .[0] == "nested"' >/dev/null 2>&1 || { echo "❌ nested list failed"; kill $SERVER_PID; false; }
+
+  response=$(curl -fs -X POST -H "Content-Type: application/json" -d '{}' "http://localhost:$test_port/api/v1/statecharts/nested/instances")
+  [ $VERBOSE = 1 ] && echo "=== create nested ===" && echo "$response" | jq '.'
+  echo "$response" | jq -e '.current == "root.parent.child1"' >/dev/null 2>&1 || { echo "❌ nested create failed"; kill $SERVER_PID; false; }
+  local inst_id=$(echo "$response" | jq -r '.id')
+
+  response=$(curl -fs -X POST -H "Content-Type: application/json" -d '{"type": "next"}' "http://localhost:$test_port/api/v1/statecharts/nested/instances/$inst_id/events")
+  [ $VERBOSE = 1 ] && echo "=== nested next ===" && echo "$response" | jq '.'
+  echo "$response" | jq -e '.current == "root.parent.child2"' >/dev/null 2>&1 || { echo "❌ nested next failed"; kill $SERVER_PID; false; }
+
+  kill "$SERVER_PID" || true
+  echo "✓ Nested compound test passed"
+}
+
+test_invalid_event() {
+  local test_port=8087
+  local test_dir=$(mktemp -d -t maelstrom_test_invalid_event_XXXXXX)
+  export REGISTRY_DIR="$test_dir"
+  export LISTEN_ADDR=":$test_port"
+  ./bin/server >/dev/null 2>&1 &
+  SERVER_PID=$!
+  sleep 0.5
+  wait_ready "$test_port" || { echo "Server not ready"; false; }
+
+  cat > "$test_dir/trafficlight.yaml" << 'EOF'
+name: trafficlight
+version: 1.0
+machine:
+  id: root
+  initial: green
+  states:
+    green:
+      on:
+        next:
+          target: red
+    red: {}
+EOF
+  sleep 2
+
+  response=$(curl -fs -X POST -H "Content-Type: application/json" -d '{}' "http://localhost:$test_port/api/v1/statecharts/trafficlight/instances")
+  local inst_id=$(echo "$response" | jq -r '.id')
+
+  response=$(curl -fs -X POST -H "Content-Type: application/json" -d '{"type": "next"}' "http://localhost:$test_port/api/v1/statecharts/trafficlight/instances/$inst_id/events")
+  echo "$response" | jq -e '.current == "root.red"' >/dev/null 2>&1 || { echo "❌ invalid_event valid transition failed"; false; }
+
+  response=$(curl -s -X POST -H "Content-Type: application/json" -d '{"type": "invalid"}' "http://localhost:$test_port/api/v1/statecharts/trafficlight/instances/$inst_id/events")
+  [ $VERBOSE = 1 ] && echo "=== invalid event ===" && echo "$response"
+  echo "$response" | grep -q 'event type "invalid" not found' || { echo "❌ invalid event not rejected (expected 400 error)"; false; }
+
+  kill "$SERVER_PID" || true
+  echo "✓ Invalid event test passed"
+}
+
+test_parallel_simple() {
+  local test_port=8088
+  local test_dir=$(mktemp -d -t maelstrom_test_parallel_XXXXXX)
+  export REGISTRY_DIR="$test_dir"
+  export LISTEN_ADDR=":$test_port"
+  ./bin/server >/dev/null 2>&1 &
+  SERVER_PID=$!
+  sleep 0.5
+  wait_ready "$test_port" || { echo "Server not ready"; false; }
+
+  cat > "$test_dir/parallel.yaml" << 'EOF'
+name: parallel
+version: 1.0
+machine:
+  id: root
+  initial: par
+  states:
+    par:
+      parallel: true
+      states:
+        left: {}
+        right: {}
+EOF
+  sleep 2
+
+  response=$(curl -fs "http://localhost:$test_port/api/v1/statecharts")
+  echo "$response" | jq -e '.[0] == "parallel"' >/dev/null || { echo "❌ parallel list"; false; }
+
+  response=$(curl -fs -X POST -H "Content-Type: application/json" -d '{}' "http://localhost:$test_port/api/v1/statecharts/parallel/instances")
+  [ $VERBOSE = 1 ] && echo "=== parallel create ===" && echo "$response" | jq '.'
+  local inst_id=$(echo "$response" | jq -r '.id')
+  echo "$response" | jq -e '(.current | startswith("root.par"))' >/dev/null 2>&1 || { echo "❌ parallel create"; false; }
+
+  kill "$SERVER_PID" || true
+  echo "✓ Simple parallel test passed"
+}
+
+
 TEST_PORT=8081
 trap 'kill ${SERVER_PID:-} 2>/dev/null || true; rm -rf "${TEST_DIR:-}"' EXIT
 
-test_valid && test_invalid && test_change && test_template && echo "All E2E tests passed!"
+test_valid && test_invalid && test_change && test_template &&
+test_statecharts &&
+test_nested_compound &&
+test_invalid_event &&
+test_parallel_simple &&
+echo "All E2E tests passed!"
+
