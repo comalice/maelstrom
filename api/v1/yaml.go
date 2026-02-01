@@ -16,7 +16,7 @@ import (
 func ListYamlsHandler(w http.ResponseWriter, r *http.Request) {
 	list := registry.GlobalRegistry.List()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(list)
+	_ = json.NewEncoder(w).Encode(list)
 }
 
 // @Summary Import YAML
@@ -32,7 +32,7 @@ func ImportYamlHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "imported"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "imported"})
 }
 
 // @Summary List Raw YAMLs
@@ -43,5 +43,5 @@ func ImportYamlHandler(w http.ResponseWriter, r *http.Request) {
 func ListRawYamlsHandler(w http.ResponseWriter, r *http.Request) {
 	list := registry.GlobalRegistry.ListRaw()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(list)
+	_ = json.NewEncoder(w).Encode(list)
 }

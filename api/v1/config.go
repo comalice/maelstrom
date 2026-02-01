@@ -14,7 +14,7 @@ func ConfigRouter() chi.Router {
 
 	r.Get("/config.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(config.AppConfigSchema())
+		_, _ = w.Write(config.AppConfigSchema())
 	})
 
 	r.Mount("/", httpSwagger.Handler(

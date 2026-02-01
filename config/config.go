@@ -28,6 +28,13 @@ type AppConfig struct {
 	// Environment: REGISTRY_DIR
 	// Default: ./yaml
 	RegistryDir string `envconfig:"REGISTRY_DIR" desc:"Directory for YAML registry files" default:"./yaml"`
+
+	DefaultModel        string         `envconfig:"DEFAULT_MODEL" desc:"Default LLM model" default:"claude-3-5-sonnet-20240620"`
+	DefaultProvider     string         `envconfig:"DEFAULT_PROVIDER" desc:"Default LLM provider" default:"anthropic"`
+	DefaultBaseURL      *string        `envconfig:"DEFAULT_BASE_URL" desc:"Default LLM base URL"`
+	DefaultTemperature  *float64       `envconfig:"DEFAULT_TEMPERATURE" desc:"Default temperature" default:"0.7"`
+	DefaultMaxTokens    *int           `envconfig:"DEFAULT_MAX_TOKENS" desc:"Default max tokens" default:"4096"`
+	DefaultAPIKey       string         `envconfig:"DEFAULT_API_KEY" desc:"Default API key (or env:VAR)"`
 }
 
 // AppConfigFields returns slice of ConfigField from AppConfig struct tags via reflect.

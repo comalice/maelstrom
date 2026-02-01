@@ -34,6 +34,7 @@ type Registry struct {
 	dir     string // Track watch dir
 	Config  *config.AppConfig `json:"-"`
 	Env     map[string]string `json:"-"`
+	resolver *config.ConfigHierarchyResolver `json:"-"`
 }
 
 var GlobalRegistry *Registry
@@ -54,6 +55,7 @@ func (r *Registry) SetConfig(cfg *config.AppConfig) {
 		}
 	}
 	slog.Info("registry config and env set")
+	r.resolver = config.NewResolver(r.Config)
 }
 
 func (r *Registry) InitWatcher(dir string) error {
@@ -149,6 +151,11 @@ func (r *Registry) List() []*YAMLImport {
 					newItem.Content = map[string]interface{}{}
 				}
 			}
+		}
+
+		if r.resolver != nil && newItem.Content != nil && len(newItem.Content) > 0 {
+			res := r.resolver.Resolve(newItem.Content, nil, nil)
+			newItem.Content["resolved"] = config.ToResolvedMap(res)
 		}
 		list = append(list, newItem)
 	}
