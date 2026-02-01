@@ -27,7 +27,7 @@ test_curl() {
   local response
   response=$(curl -fs "http://localhost:$TEST_PORT/api/v1/yamls" || echo '[]')
   [ $VERBOSE = 1 ] && echo "=== $label ===" && echo "$response" | jq '.'
-  echo "$response" | jq -e "$jq_expr" >/dev/null || { echo "❌ $label failed: $jq_expr"; false; }
+  if ! echo "$response" | jq -e "$jq_expr" >/dev/null 2>&1; then echo "❌ $label failed: $jq_expr"; return 1; fi
 }
 
 test_valid() {
@@ -44,21 +44,18 @@ test_valid() {
   wait_ready "$TEST_PORT" || { echo "Server not ready on $TEST_PORT"; kill $SERVER_PID; false; }
 
   # Initial list empty
-  test_curl "initial (empty)" 'length == 0'
-
+  test_curl "initial (empty)" 'length == 0' &&
   # Create valid YAML file (version from filename)
-  echo '{}' > "$TEST_DIR/app-v1.0.yaml"
-  sleep 2  # Wait for watcher
-
+  echo '{}' > "$TEST_DIR/app-v1.0.yaml" &&
+  sleep 2  # Wait for watcher &&
   # Listed, active, correct version from filename
   test_curl "after valid.yaml" '
     length == 1 and
     .[0].active == true and
     .[0].version == "1.0" and
     (.?[0].content | type) == "object"
-  '
-
-  kill "$SERVER_PID"
+  ' &&
+  kill "$SERVER_PID" &&
   echo "✓ Valid YAML test passed"
 }
 
@@ -77,16 +74,13 @@ test_invalid() {
   wait_ready "$TEST_PORT" || { echo "Server not ready on $TEST_PORT"; false; }
 
   # Initial empty
-  test_curl "initial-invalid (empty)" 'length == 0'
-
+  test_curl "initial-invalid (empty)" 'length == 0' &&
   # Create invalid YAML
-  echo 'not valid yaml' > "$TEST_DIR/invalid.yaml"
-  sleep 2
-
+  echo 'not valid yaml' > "$TEST_DIR/invalid.yaml" &&
+  sleep 2 &&
   # Listed but empty content (unmarshal/render failed)
-  test_curl "after-invalid" 'length == 1 and .[0].version == "unknown" and (.[0].content | length) == 0'
-
-  kill "$SERVER_PID"
+  test_curl "after-invalid" 'length == 1 and .[0].version == "unknown" and (.[0].content | length) == 0' &&
+  kill "$SERVER_PID" &&
   echo "✓ Invalid YAML test passed"
 }
 
@@ -143,7 +137,7 @@ test_curl_local() {
   local response
   response=$(curl -fs "http://localhost:$port/api/v1/yamls" || echo '[]')
   [ $VERBOSE = 1 ] && echo "=== $label ===" && echo "$response" | jq '.'
-  echo "$response" | jq -e "$jq_expr" >/dev/null || { echo "❌ $label failed: $jq_expr"; false; }
+  if ! echo "$response" | jq -e "$jq_expr" >/dev/null 2>&1; then echo "❌ $label failed: $jq_expr"; return 1; fi
 }
 
 test_curl_raw_local() {
@@ -153,7 +147,7 @@ test_curl_raw_local() {
   local response
   response=$(curl -fs "http://localhost:$port/api/v1/raw-yamls" || echo '[]')
   [ $VERBOSE = 1 ] && echo "=== RAW $label ===" && echo "$response" | jq '.'
-  echo "$response" | jq -e "$jq_expr" >/dev/null || { echo "❌ RAW $label failed: $jq_expr"; false; }
+  if ! echo "$response" | jq -e "$jq_expr" >/dev/null; then echo "❌ RAW $label failed: $jq_expr"; exit 1; fi
 }
 
 test_template() {
