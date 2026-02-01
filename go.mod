@@ -3,6 +3,7 @@ module github.com/comalice/maelstrom
 go 1.25.6
 
 require (
+	github.com/comalice/statechartx v0.1.2-alpha.4
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-chi/chi/v5 v5.2.4
 	github.com/kelseyhightower/envconfig v1.4.0
