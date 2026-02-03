@@ -17,9 +17,10 @@ import (
 )
 
 var (
-	instances         sync.Map // machineID -> map[instID]*statechartx.Runtime
+	instances         sync.Map // machineID -> *sync.Map of instID:*statechartx.Runtime
 	nextInstanceID    int64
 	instanceMutexes   sync.Map // mid:iid -> *sync.Mutex
+	augCache          sync.Map // machineID -> *registrystatechart.AugmentedMachine
 )
 
 type EventLog struct {
@@ -37,6 +38,7 @@ func StatechartsRouter() http.Handler {
 	r.Get("/", listMachines)
 	r.Post("/{machineID}/instances", createInstance)
 	r.Post("/{machineID}/instances/{instID}/events", sendEvent)
+	r.Delete("/{machineID}/instances/{instID}", deleteInstance)
 	return r
 }
 
@@ -52,11 +54,16 @@ func getMachines() []string {
 }
 
 func getAugmentedMachine(id string) (*registrystatechart.AugmentedMachine, error) {
+	if v, ok := augCache.Load(id); ok {
+		return v.(*registrystatechart.AugmentedMachine), nil
+	}
 	filename := id + ".yaml"
 	items := registry.GlobalRegistry.List()
 	for _, item := range items {
 		if item.Filename == filename && item.Type == "statechart" && item.Active && item.StatechartAugmented != nil {
-			return item.StatechartAugmented, nil
+			aug := item.StatechartAugmented
+			augCache.Store(id, aug)
+			return aug, nil
 		}
 	}
 	return nil, fmt.Errorf("machine %q not found", id)
@@ -93,6 +100,9 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	iid := fmt.Sprintf("i%d", atomic.AddInt64(&nextInstanceID, 1))
+	mu := getInstanceMutex(mid, iid)
+	mu.Lock()
+	defer mu.Unlock()
 	path := instancePath(mid, iid)
 	initialBytes, _ := json.Marshal(req.InitialContext)
 	state := &InstanceState{Initial: json.RawMessage(initialBytes), History: []EventLog{}}
@@ -101,25 +111,25 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bgctx := context.Background()
-	rt := statechartx.NewRuntime(aug.Machine, req.InitialContext)
+	initialCtx := statechartx.NewContext()
+	if m, ok := req.InitialContext.(map[string]interface{}); ok {
+		initialCtx.LoadAll(m)
+	}
+	rt := statechartx.NewRuntime(aug.Machine, initialCtx)
 	if err := rt.Start(bgctx); err != nil {
 		slog.Error("runtime.Start failed", "machine", mid, "iid", iid, "err", err)
 		http.Error(w, "failed to start runtime", http.StatusInternalServerError)
 		return
 	}
+	rt.EmbedContext()
 	currentID := rt.GetCurrentState()
 	resp := CreateInstanceResp{
 		ID: iid,
 		Current: aug.StatePathByID[currentID],
 	}
-	var instMap map[string]*statechartx.Runtime
-	if v, ok := instances.Load(mid); ok {
-		instMap = v.(map[string]*statechartx.Runtime)
-	} else {
-		instMap = make(map[string]*statechartx.Runtime)
-	}
-	instMap[iid] = rt
-	instances.Store(mid, instMap)
+	v, _ := instances.LoadOrStore(mid, new(sync.Map))
+	midMap := v.(*sync.Map)
+	midMap.Store(iid, rt)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Error("json encode", "err", err)
@@ -133,7 +143,7 @@ type SendEventReq struct {
 
 type SendEventResp struct {
 	Current string   `json:"current"`
-	History []string `json:"history"`
+	History string   `json:"history"`
 }
 
 func sendEvent(w http.ResponseWriter, r *http.Request) {
@@ -162,20 +172,42 @@ func sendEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	var initialData any
-	if err := json.Unmarshal(state.Initial, &initialData); err != nil {
-		slog.Error("unmarshal initial", "iid", iid, "err", err)
-		initialData = map[string]any{}
+	// Try reuse in-memory runtime
+	var rt *statechartx.Runtime
+	if v, ok := instances.Load(mid); ok {
+		midMap := v.(*sync.Map)
+		rtIface, loaded := midMap.Load(iid)
+		if loaded {
+			rt = rtIface.(*statechartx.Runtime)
+		}
 	}
-	bgctx := context.Background()
-	rt := statechartx.NewRuntime(aug.Machine, initialData)
-	if err := rt.Start(bgctx); err != nil {
-		slog.Error("replay rt.Start failed", "mid", mid, "iid", iid, "err", err)
-		http.Error(w, "failed to start runtime", http.StatusInternalServerError)
-		return
-	}
-	if err := replayRuntime(rt, aug, state.History); err != nil {
-		slog.Error("replay failed", "mid", mid, "iid", iid, "err", err)
+	if rt == nil {
+		var initialData any
+		if err := json.Unmarshal(state.Initial, &initialData); err != nil {
+			slog.Error("unmarshal initial", "iid", iid, "err", err)
+			initialData = map[string]any{}
+		}
+		bgctx := context.Background()
+		initialCtx := statechartx.NewContext()
+		if m, ok := initialData.(map[string]interface{}); ok {
+			initialCtx.LoadAll(m)
+		}
+		rt = statechartx.NewRuntime(aug.Machine, initialCtx)
+		if err := rt.Start(bgctx); err != nil {
+			slog.Error("rt.Start failed", "mid", mid, "iid", iid, "err", err)
+			http.Error(w, "failed to start runtime", http.StatusInternalServerError)
+			return
+		}
+		if err := replayRuntime(rt, aug, state.History); err != nil {
+			slog.Error("replay failed", "mid", mid, "iid", iid, "err", err)
+			http.Error(w, fmt.Sprintf("replay failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		rt.EmbedContext()
+		v, _ := instances.LoadOrStore(mid, make(map[string]*statechartx.Runtime))
+		instMap := v.(map[string]*statechartx.Runtime)
+		instMap[iid] = rt
+		instances.Store(mid, instMap)
 	}
 	eid, ok := aug.EventIDByName[evtReq.Type]
 	if !ok {
@@ -183,6 +215,7 @@ func sendEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	evt := statechartx.Event{ID: eid, Data: evtReq.Data}
+	rt.EmbedContext()
 	rt.ProcessEvent(evt)
 	evtDataBytes, _ := json.Marshal(evtReq.Data)
 	newLog := EventLog{
@@ -198,10 +231,35 @@ func sendEvent(w http.ResponseWriter, r *http.Request) {
 	currentID := rt.GetCurrentState()
 	resp := SendEventResp{
 		Current: aug.StatePathByID[currentID],
-		History: []string{}, // or fmt.Sprintf("%d events", len(state.History))
+		History: fmt.Sprintf("%d events", len(state.History)),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Error("json encode", "err", err)
 	}
+}
+
+func deleteInstance(w http.ResponseWriter, r *http.Request) {
+	mid := chi.URLParam(r, "machineID")
+	iid := chi.URLParam(r, "instID")
+	path := instancePath(mid, iid)
+	mu := getInstanceMutex(mid, iid)
+	mu.Lock()
+	defer mu.Unlock()
+	if err := deleteInstanceState(path); err != nil {
+		slog.Error("delete state failed", "path", path, "err", err)
+		http.Error(w, fmt.Sprintf("delete failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	// Cleanup in-memory runtime
+	if v, ok := instances.Load(mid); ok {
+		if instMap, ok := v.(map[string]*statechartx.Runtime); ok {
+			if rt, ok := instMap[iid]; ok {
+				rt.Stop()
+				delete(instMap, iid)
+				instances.Store(mid, instMap)
+			}
+		}
+	}
+	w.WriteHeader(http.StatusOK)
 }

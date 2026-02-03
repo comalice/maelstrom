@@ -368,6 +368,77 @@ EOF
   echo "✓ Simple parallel test passed"
 }
 
+test_actions_guards() {
+  local test_port=8089
+  local test_dir=$(mktemp -d -t maelstrom_test_actions_XXXXXX)
+  rm -rf instances/counter || true
+  export REGISTRY_DIR="$test_dir"
+  export LISTEN_ADDR=":$test_port"
+    if [ $VERBOSE = 1 ]; then
+    ./bin/server &
+  else
+    ./bin/server >/dev/null 2>&1 &
+  fi
+  SERVER_PID=$!
+  sleep 0.5
+  wait_ready "$test_port" || { echo "Server not ready on $test_port"; kill $SERVER_PID; false; }
+
+  # Initial list empty
+  response=$(curl -fs "http://localhost:$test_port/api/v1/statecharts" || echo '[]')
+  [ $VERBOSE = 1 ] && echo "=== actions_guards initial ===" && echo "$response" | jq '.'
+  if ! echo "$response" | jq -e 'length == 0' >/dev/null 2>&1; then echo "❌ initial empty failed"; kill "$SERVER_PID" || true; exit 1; fi
+
+  # Create counter.yaml
+  cat > "$test_dir/counter.yaml" << 'EOF'
+name: counter
+version: 1.0
+machine:
+  id: root
+  initial: counting
+  states:
+    counting:
+      on:
+        inc:
+          target: counting
+    done: {}
+EOF
+  sleep 2  # Wait watcher
+
+  # List shows counter
+  response=$(curl -fs "http://localhost:$test_port/api/v1/statecharts" || echo '[]')
+  [ $VERBOSE = 1 ] && echo "=== actions_guards list ===" && echo "$response" | jq '.'
+  if ! echo "$response" | jq -e 'length == 1 and .[0] == "counter"' >/dev/null 2>&1; then echo "❌ list counter failed"; kill "$SERVER_PID" || true; exit 1; fi
+
+  # Create instance
+  response=$(curl -fs -X POST -H "Content-Type: application/json" -d '{"initialContext": {"count": 0}}' "http://localhost:$test_port/api/v1/statecharts/counter/instances")
+  [ $VERBOSE = 1 ] && echo "=== create instance ===" && echo "$response" | jq '.'
+  if ! echo "$response" | jq -e 'has("id") and (.id | startswith("i")) and .current == "root.counting"' >/dev/null 2>&1; then echo "❌ create instance failed"; kill "$SERVER_PID" || true; exit 1; fi
+  local inst_id=$(echo "$response" | jq -r '.id')
+
+  # Send 5 inc events (exercises guard true, action called)
+  for i in {1..5}; do
+    response=$(curl -fs -X POST -H "Content-Type: application/json" -d '{"type": "inc", "data": {"by": 1}}' "http://localhost:$test_port/api/v1/statecharts/counter/instances/$inst_id/events")
+    [ $VERBOSE = 1 ] && echo "=== inc $i ===" && echo "$response" | jq '.'
+    if ! echo "$response" | jq -e --arg h "$i events" '.current == "root.counting" and .history == $h' >/dev/null 2>&1; then echo "❌ inc $i failed"; kill "$SERVER_PID" || true; exit 1; fi
+  done
+
+  # 6th inc (should still process, history++, but guard log false; state stays counting even if count not updated due to dummy LLM)
+  response=$(curl -fs -X POST -H "Content-Type: application/json" -d '{"type": "inc", "data": {"by": 1}}' "http://localhost:$test_port/api/v1/statecharts/counter/instances/$inst_id/events")
+  [ $VERBOSE = 1 ] && echo "=== inc 6 (guard test) ===" && echo "$response" | jq '.'
+  if ! echo "$response" | jq -e '.current == "root.counting" and .history == "6 events"' >/dev/null 2>&1; then echo "❌ inc 6 failed"; kill "$SERVER_PID" || true; exit 1; fi
+
+  # Verify persisted JSON history
+  local inst_file="instances/counter/$inst_id.json"
+  [ -f "$inst_file" ] || { echo "❌ persisted file missing"; false; }
+  if ! jq -e '.history | length == 6 and (map(.type) | all(. == "inc"))' "$inst_file" >/dev/null 2>&1; then echo "❌ persisted history wrong"; exit 1; fi
+  [ $VERBOSE = 1 ] && echo "=== persisted $inst_file ===" && cat "$inst_file" | jq '.history'
+
+  kill "$SERVER_PID" || true
+  rm -rf instances/counter || true
+  echo "✓ Actions/Guards test passed"
+}
+
+
 
 TEST_PORT=8081
 trap 'kill ${SERVER_PID:-} 2>/dev/null || true; rm -rf "${TEST_DIR:-}"' EXIT
@@ -376,6 +447,6 @@ test_valid && test_invalid && test_change && test_template &&
 test_statecharts &&
 test_nested_compound &&
 test_invalid_event &&
-test_parallel_simple &&
+test_parallel_simple && test_actions_guards &&
 echo "All E2E tests passed!"
 

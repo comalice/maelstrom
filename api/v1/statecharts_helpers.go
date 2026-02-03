@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -33,15 +32,28 @@ func loadInstanceState(path string) (*InstanceState, bool, error) {
 }
 
 func saveInstanceState(path string, state *InstanceState) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+	tmp := filepath.Join(dir, "."+filepath.Base(path)+".tmp")
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return fmt.Errorf("write tmp %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp) // cleanup
+		return fmt.Errorf("rename %s to %s: %w", tmp, path, err)
+	}
+	return nil
+}
+
+func deleteInstanceState(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", path, err)
 	}
 	return nil
 }
@@ -57,13 +69,11 @@ func replayRuntime(rt *statechartx.Runtime, aug *registrystatechart.AugmentedMac
 	for _, log := range history {
 		eid, ok := aug.EventIDByName[log.Type]
 		if !ok {
-			slog.Warn("replay skip unknown event", "type", log.Type)
-			continue
+			return fmt.Errorf("replay unknown event %q", log.Type)
 		}
 		var data any
 		if err := json.Unmarshal(log.Data, &data); err != nil {
-			slog.Warn("replay unmarshal data", "type", log.Type, "err", err)
-			continue
+			return fmt.Errorf("replay unmarshal data %s: %w", log.Type, err)
 		}
 		evt := statechartx.Event{ID: eid, Data: data}
 		rt.ProcessEvent(evt)

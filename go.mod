@@ -36,3 +36,5 @@ require (
 	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
 )
+
+replace github.com/comalice/statechartx => /home/albert/git/statechartx
