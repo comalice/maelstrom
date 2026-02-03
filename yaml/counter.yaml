@@ -1,0 +1,28 @@
+name: counter
+version: 1.0
+description: Counter with guard/action/persist test
+llm:
+  provider: anthropic
+  endpoint: https://api.anthropic.com
+  model: claude-3-5-sonnet-20240620
+  apiKey: ${LLM_API_KEY}
+  temp: 0.1
+  maxTokens: 512
+machine:
+  id: root
+  initial: counting
+  states:
+    counting:
+      description: Count increments up to 5
+      on:
+        inc:
+          guard: ctx.count &lt; 5
+          action: inc_count
+          target: counting
+    done: {}
+actions:
+  inc_count: |
+    Increment the counter by 1.
+    Reply with JSON: {&quot;count&quot;: ctx.count + 1}
+guards:
+  # none extra

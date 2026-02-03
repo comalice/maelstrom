@@ -3,11 +3,16 @@ package statechart
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"reflect"
+
 	"strings"
 	"time"
 
+	"github.com/comalice/maelstrom/internal/llm"
+	"github.com/expr-lang/expr"
 	"gopkg.in/yaml.v3"
 	"github.com/comalice/statechartx"
 )
@@ -18,7 +23,7 @@ type YamlMachineSpec struct {
 	Version     string            `yaml:"version"`
 	Description string            `yaml:"description,omitempty"`
 	Machine     YamlMachine       `yaml:"machine"`
-	LLM         map[string]any    `yaml:"llm,omitempty"`     // For maelstrom config resolver
+	LLM         llm.LLMConfig `yaml:"llm,omitempty"`
 	Actions     map[string]string `yaml:"actions,omitempty"` // name -> expr/code/ref
 	Guards      map[string]string `yaml:"guards,omitempty"`  // name -> expr/code/ref
 }
@@ -192,20 +197,72 @@ func (s *YamlMachineSpec) configureRecursive(b *statechartx.MachineBuilder, stat
 
 // resolveGuard stub: map lookup + expr compiler placeholder.
 // Extend: Use goexpr, otto.js, or maelstrom LLM for dynamic eval.
+func getContextData(ctx context.Context) map[string]any {
+	c := statechartx.FromContext(ctx)
+	v := reflect.ValueOf(c).Elem().FieldByName("data")
+	if !v.IsValid() || v.Kind() != reflect.Map {
+		return nil
+	}
+	m := make(map[string]any)
+	iter := v.MapRange()
+	for iter.Next() {
+		k := iter.Key()
+		vv := iter.Value()
+		if k.Kind() == reflect.String {
+			m[k.String()] = vv.Interface()
+		}
+	}
+	return m
+}
+
+func mergeContextData(ctx context.Context, patch map[string]any) {
+	c := statechartx.FromContext(ctx)
+	v := reflect.ValueOf(c).Elem().FieldByName("data")
+	if !v.IsValid() || v.Kind() != reflect.Map {
+		return
+	}
+	for k, pv := range patch {
+		kv := reflect.ValueOf(k)
+		vv := reflect.ValueOf(pv)
+		v.SetMapIndex(kv, vv)
+	}
+}
+
 func (s *YamlMachineSpec) resolveGuard(name string) statechartx.Guard {
 	if name == "" {
 		return nil
 	}
-	if expr, ok := s.Guards[name]; ok {
+	exprStr, ok := s.Guards[name]
+	if !ok {
 		return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) (bool, error) {
-			// TODO: Eval expr vs statechartx.FromContext(ctx), evt.Data
-			log.Printf("[Guard %s] expr=%q stub=true", name, expr)
+			log.Printf("[Guard missing %q] default=true", name)
+			return true, nil
+		}
+	}
+	prog, err := expr.Compile(exprStr, expr.AsBool())
+	if err != nil {
+		log.Printf("[Guard compile %s %q] err=%v fallback=true", name, exprStr, err)
+		return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) (bool, error) {
 			return true, nil
 		}
 	}
 	return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) (bool, error) {
-		log.Printf("[Guard missing %q] default=true", name)
-		return true, nil
+		ctxData := getContextData(ctx)
+		env := map[string]any{
+			"ctx": ctxData,
+			"evt": evt.Data,
+		}
+		out, err := expr.Run(prog, env)
+		if err != nil {
+			log.Printf("[Guard run %s] env=%v err=%v fallback=true", name, env, err)
+			return true, nil
+		}
+		if b, ok := out.(bool); ok {
+			log.Printf("[Guard %s %q] ctx=%v evt=%v = %v", name, exprStr, ctxData, evt.Data, b)
+			return b, nil
+		}
+		log.Printf("[Guard %s] not bool %v fallback=false", name, out)
+		return false, nil
 	}
 }
 
@@ -214,14 +271,39 @@ func (s *YamlMachineSpec) resolveAction(name string) statechartx.Action {
 	if name == "" {
 		return nil
 	}
-	if expr, ok := s.Actions[name]; ok {
+	actionStr, ok := s.Actions[name]
+	if !ok {
 		return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
-			log.Printf("[Action %s] expr=%q stub=executed", name, expr)
+			log.Printf("[Action missing %q] noop", name)
+			return nil
+		}
+	}
+	if s.LLM.Provider == "" {
+		return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
+			log.Printf("[Action %s] no LLM config, noop", name)
 			return nil
 		}
 	}
 	return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
-		log.Printf("[Action missing %q] noop", name)
+		ctxData := getContextData(ctx)
+		evtDataBytes, _ := json.Marshal(evt.Data)
+		prompt := fmt.Sprintf(`Action '%s' from %v → %v on event %s with context %v.
+
+%s
+
+Reply ONLY with valid JSON object to shallow merge into context. No other text. Example: {"count": 5}`, name, from, to, string(evtDataBytes), ctxData, actionStr)
+		resp, err := llm.Call(ctx, s.LLM, prompt)
+		if err != nil {
+			log.Printf("[Action %s LLM call] err=%v", name, err)
+			return nil
+		}
+		var patch map[string]any
+		if err := json.Unmarshal([]byte(resp), &patch); err != nil {
+			log.Printf("[Action %s JSON parse %q] err=%v", name, resp, err)
+			return nil
+		}
+		mergeContextData(ctx, patch)
+		log.Printf("[Action %s] merged patch: %v", name, patch)
 		return nil
 	}
 }

@@ -76,7 +76,11 @@ machine:
 	rt := statechartx.NewRuntime(machine, nil)
 	bgCtx := context.Background()
 	require.NoError(t, rt.Start(bgCtx))
-	defer rt.Stop()
+	defer func() {
+		if err := rt.Stop(); err != nil {
+			t.Logf("rt.Stop: %v", err)
+		}
+	}()
 	assert.True(t, rt.IsInState(machine.Initial))
 }
 
@@ -139,7 +143,11 @@ actions:
 	rt := statechartx.NewRuntime(machine, nil)
 	ctx := context.Background()
 	require.NoError(t, rt.Start(ctx))
-	defer rt.Stop()
+	defer func() {
+		if err := rt.Stop(); err != nil {
+			t.Logf("rt.Stop: %v", err)
+		}
+	}()
 
 	// Event ID from builder (event:timer -> assigned ID)
 	// Stubs don't need real exec; just no panic

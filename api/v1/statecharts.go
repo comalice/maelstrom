@@ -17,9 +17,20 @@ import (
 )
 
 var (
-	instances         sync.Map // machineID -> map[instID]*Runtime
+	instances         sync.Map // machineID -> map[instID]*statechartx.Runtime
 	nextInstanceID    int64
+	instanceMutexes   sync.Map // mid:iid -> *sync.Mutex
 )
+
+type EventLog struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
+
+type InstanceState struct {
+	Initial json.RawMessage `json:"initialContext"`
+	History []EventLog      `json:"history"`
+}
 
 func StatechartsRouter() http.Handler {
 	r := chi.NewRouter()
@@ -55,7 +66,9 @@ func getAugmentedMachine(id string) (*registrystatechart.AugmentedMachine, error
 func listMachines(w http.ResponseWriter, r *http.Request) {
 	mids := getMachines()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(mids)
+	if err := json.NewEncoder(w).Encode(mids); err != nil {
+		slog.Error("json encode", "err", err)
+	}
 }
 
 type CreateInstanceReq struct {
@@ -79,16 +92,24 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	rt := statechartx.NewRuntime(aug.Machine, req.InitialContext)
+	iid := fmt.Sprintf("i%d", atomic.AddInt64(&nextInstanceID, 1))
+	path := instancePath(mid, iid)
+	initialBytes, _ := json.Marshal(req.InitialContext)
+	state := &InstanceState{Initial: json.RawMessage(initialBytes), History: []EventLog{}}
+	if err := saveInstanceState(path, state); err != nil {
+		http.Error(w, fmt.Sprintf("save instance: %v", err), http.StatusInternalServerError)
+		return
+	}
 	bgctx := context.Background()
+	rt := statechartx.NewRuntime(aug.Machine, req.InitialContext)
 	if err := rt.Start(bgctx); err != nil {
-		slog.Error("runtime.Start failed", "machine", mid, "err", err)
+		slog.Error("runtime.Start failed", "machine", mid, "iid", iid, "err", err)
 		http.Error(w, "failed to start runtime", http.StatusInternalServerError)
 		return
 	}
 	currentID := rt.GetCurrentState()
 	resp := CreateInstanceResp{
-		ID:     fmt.Sprintf("i%d", atomic.AddInt64(&nextInstanceID, 1)),
+		ID: iid,
 		Current: aug.StatePathByID[currentID],
 	}
 	var instMap map[string]*statechartx.Runtime
@@ -97,10 +118,12 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 	} else {
 		instMap = make(map[string]*statechartx.Runtime)
 	}
-	instMap[resp.ID] = rt
+	instMap[iid] = rt
 	instances.Store(mid, instMap)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Error("json encode", "err", err)
+	}
 }
 
 type SendEventReq struct {
@@ -121,33 +144,64 @@ func sendEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if v, ok := instances.Load(mid); ok {
-		instMap := v.(map[string]*statechartx.Runtime)
-		rt, ok := instMap[iid]
-		if !ok {
-			http.Error(w, "instance not found", http.StatusNotFound)
-			return
-		}
-		aug, err := getAugmentedMachine(mid)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		eid, ok := aug.EventIDByName[evtReq.Type]
-		if !ok {
-			http.Error(w, fmt.Sprintf("event type %q not found", evtReq.Type), http.StatusBadRequest)
-			return
-		}
-		evt := statechartx.Event{ID: eid, Data: evtReq.Data}
-		rt.ProcessEvent(evt)
-		currentID := rt.GetCurrentState()
-		resp := SendEventResp{
-			Current: aug.StatePathByID[currentID],
-			History: []string{},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+	path := instancePath(mid, iid)
+	mu := getInstanceMutex(mid, iid)
+	mu.Lock()
+	defer mu.Unlock()
+	state, ok, err := loadInstanceState(path)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("load instance: %v", err), http.StatusInternalServerError)
 		return
 	}
-	http.Error(w, "machine instances not found", http.StatusNotFound)
+	if !ok {
+		http.Error(w, "instance not found", http.StatusNotFound)
+		return
+	}
+	aug, err := getAugmentedMachine(mid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	var initialData any
+	if err := json.Unmarshal(state.Initial, &initialData); err != nil {
+		slog.Error("unmarshal initial", "iid", iid, "err", err)
+		initialData = map[string]any{}
+	}
+	bgctx := context.Background()
+	rt := statechartx.NewRuntime(aug.Machine, initialData)
+	if err := rt.Start(bgctx); err != nil {
+		slog.Error("replay rt.Start failed", "mid", mid, "iid", iid, "err", err)
+		http.Error(w, "failed to start runtime", http.StatusInternalServerError)
+		return
+	}
+	if err := replayRuntime(rt, aug, state.History); err != nil {
+		slog.Error("replay failed", "mid", mid, "iid", iid, "err", err)
+	}
+	eid, ok := aug.EventIDByName[evtReq.Type]
+	if !ok {
+		http.Error(w, fmt.Sprintf("event type %q not found", evtReq.Type), http.StatusBadRequest)
+		return
+	}
+	evt := statechartx.Event{ID: eid, Data: evtReq.Data}
+	rt.ProcessEvent(evt)
+	evtDataBytes, _ := json.Marshal(evtReq.Data)
+	newLog := EventLog{
+		Type: evtReq.Type,
+		Data: json.RawMessage(evtDataBytes),
+	}
+	state.History = append(state.History, newLog)
+	if err := saveInstanceState(path, state); err != nil {
+		slog.Error("save failed", "mid", mid, "iid", iid, "err", err)
+		http.Error(w, fmt.Sprintf("save instance: %v", err), http.StatusInternalServerError)
+		return
+	}
+	currentID := rt.GetCurrentState()
+	resp := SendEventResp{
+		Current: aug.StatePathByID[currentID],
+		History: []string{}, // or fmt.Sprintf("%d events", len(state.History))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		slog.Error("json encode", "err", err)
+	}
 }
