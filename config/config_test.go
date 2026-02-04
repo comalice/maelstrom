@@ -9,7 +9,7 @@ import (
 
 func TestAppConfigFields(t *testing.T) {
 	fields := AppConfigFields()
-	assert.Len(t, fields, 9, "AppConfig should have 9 fields")
+	assert.Len(t, fields, 11, "AppConfig should have 11 fields")
 
 	assert.Equal(t, "LISTEN_ADDR", fields[0].Env)
 	assert.Equal(t, "REGISTRY_DIR", fields[1].Env)
@@ -57,3 +57,21 @@ func TestLoadAppVariables(t *testing.T) {
 	assert.Equal(t, "bar", cfg.Variables["FOO"])
 }
 
+func TestEnvironmentDerivation(t *testing.T) {
+	os.Clearenv(); os.Setenv("APP_ENV", "prod")
+	cfg := &AppConfig{}; err := LoadAppVariables(cfg); assert.NoError(t, err)
+	assert.Equal(t, "prod", cfg.Environment)
+	assert.Equal(t, "prod", cfg.Variables["ENV"])
+}
+
+func TestCompanyNameDerivation(t *testing.T) {
+	os.Clearenv(); os.Setenv("APP_COMPANY_NAME", "Acme")
+	cfg := &AppConfig{}; err := LoadAppVariables(cfg); assert.NoError(t, err)
+	assert.Equal(t, "Acme", cfg.CompanyName)
+	assert.Equal(t, "Acme", cfg.Variables["COMPANY_NAME"])
+}
+
+func TestMissingEnvironmentVariable(t *testing.T) {
+	os.Clearenv(); cfg := &AppConfig{}; err := LoadAppVariables(cfg); assert.NoError(t, err)
+	assert.Equal(t, "development", cfg.Environment)
+}

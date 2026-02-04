@@ -47,11 +47,13 @@ type Registry struct {
 	RuntimeDir   string                           `json:"runtime_dir"`
 	MaxAgents    int                              `json:"max_agents"`
 	CostPerHour  float64                          `json:"cost_per_hour"`
-	NumAgents    atomic.Int32                     `json:"num_agents"`
-	Machines     map[string]*statechart.AugmentedMachine `json:"-"`
+	NumAgents      atomic.Int32                     `json:"num_agents"`
+	MaxLLMCalls    atomic.Int32                     `json:"max_llm_calls"`
+	Machines       map[string]*statechart.AugmentedMachine `json:"-"`
 }
 
 var ErrMaxAgents = errors.New("max agents reached")
+var ErrMaxLLMCalls = errors.New("max llm calls reached")
 
 var GlobalRegistry *Registry
 
@@ -210,7 +212,7 @@ func (r *Registry) List() []*YAMLImport {
 				resolved := r.resolver.Resolve(newItem.Content, nil, nil)
 				spec.LLM = toLLMConfig(resolved)
 			}
-			aug, merr := spec.ToAugmentedMachine()
+			aug, merr := spec.ToAugmentedMachine(r)
 			if merr == nil {
 				newItem.StatechartAugmented = aug
 			} else {
@@ -303,7 +305,7 @@ func (r *Registry) HireAgent(template string) error {
 		return fmt.Errorf("parse agent spec %q: %w", template, err)
 	}
 
-	aug, err := spec.ToAugmentedMachine()
+	aug, err := spec.ToAugmentedMachine(r)
 	if err != nil {
 		return fmt.Errorf("augment agent machine %q: %w", template, err)
 	}
@@ -314,6 +316,45 @@ func (r *Registry) HireAgent(template string) error {
 
 	slog.Info("hired agent", "id", id, "template", template)
 	return nil
+}
+
+func (r *Registry) RetireAgent(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.Machines[id]; ok {
+		delete(r.Machines, id)
+		r.NumAgents.Add(-1)
+		slog.Info("retired agent", "id", id)
+	} else {
+		return fmt.Errorf("agent %q not found", id)
+	}
+	return nil
+}
+
+func (r *Registry) SendMessage(toID string, msg map[string]any) error {
+	r.mu.RLock()
+	_, ok := r.Machines[toID]
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("agent %q not found", toID)
+	}
+	// Stub: log message, dispatch event later
+	slog.Info("SendMessage stubbed", "toID", toID, "msg", msg)
+	return nil
+}
+
+func (r *Registry) QueryAgents() map[string]statechart.AgentInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	m := make(map[string]statechart.AgentInfo)
+	for id, aug := range r.Machines {
+		m[id] = statechart.AgentInfo{
+			ID:      id,
+			Current: aug.Current(),
+			History: aug.History(),
+		}
+	}
+	return m
 }
 
 func (r *Registry) Import(filename string) error {

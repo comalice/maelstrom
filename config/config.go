@@ -37,6 +37,9 @@ type AppConfig struct {
 	DefaultMaxTokens   *int              `envconfig:"DEFAULT_MAX_TOKENS" desc:"Default max tokens" default:"4096"`
 	DefaultAPIKey      string            `envconfig:"DEFAULT_API_KEY" desc:"Default API key (or env:VAR)"`
 	Variables          map[string]string `envconfig:"APP_VARS" desc:"App variables from APP_* env vars"`
+	MaxLLMCalls       *int              `envconfig:"MAX_LLM_CALLS" desc:"Max global LLM calls" default:"100"`
+	Environment string
+	CompanyName string
 }
 
 // AppConfigFields returns slice of ConfigField from AppConfig struct tags via reflect.
@@ -126,6 +129,15 @@ func LoadAppVariables(cfg *AppConfig) error {
 				cfg.Variables[strings.TrimPrefix(parts[0], "APP_")] = parts[1]
 			}
 		}
+	}
+
+	cfg.Environment = cfg.Variables["ENV"]
+	if cfg.Environment == "" {
+		cfg.Environment = "development"
+	}
+	cfg.CompanyName = cfg.Variables["COMPANY_NAME"]
+	if cfg.CompanyName == "" {
+		cfg.CompanyName = ""
 	}
 	return nil
 }

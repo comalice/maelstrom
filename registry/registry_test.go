@@ -161,3 +161,33 @@ machine:
 	assert.Error(t, err)
 	assert.Equal(t, 5, int(r.NumAgents.Load()))
 }
+
+func TestRetireAgent(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "simple.yaml"), []byte(`name: simple
+machine:
+  id: simple
+  initial: idle
+  states:
+    idle: {}`), 0644))
+	r := New()
+	r.AgentsDir = dir
+	cfg := &config.AppConfig{Variables: map[string]string{}}
+	r.SetConfig(cfg)
+	err := r.HireAgent("simple")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, int(r.NumAgents.Load()))
+	assert.Len(t, r.Machines, 1)
+	id := ""
+	for k := range r.Machines {
+		id = k
+		break
+	}
+	require.NotEmpty(t, id)
+	err = r.RetireAgent(id)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, int(r.NumAgents.Load()))
+	assert.Len(t, r.Machines, 0)
+	err = r.RetireAgent(id)
+	assert.Error(t, err)
+}

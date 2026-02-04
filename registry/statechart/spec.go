@@ -16,6 +16,24 @@ import (
 	"github.com/comalice/statechartx"
 )
 
+type AgentHirer interface {
+	HireAgent(template string) error
+	RetireAgent(id string) error
+	SendMessage(toID string, msg map[string]any) error
+	QueryAgents() map[string]AgentInfo
+}
+
+type AgentInfo struct {
+	ID string `json:"id"`
+	Current string `json:"current"`
+	History []statechartx.Event `json:"history"`
+}
+
+
+
+
+
+
 // YamlMachineSpec top-level YAML structure (matches example traffic-light YAML).
 type YamlMachineSpec struct {
 	Name        string            `yaml:"name"`
@@ -69,9 +87,17 @@ type AugmentedMachine struct {
 	EventNameByID  map[statechartx.EventID]string
 }
 
+func (a *AugmentedMachine) Current() string {
+	return "idle"
+}
+
+func (a *AugmentedMachine) History() []statechartx.Event {
+	return []statechartx.Event{}
+}
+
 // ToAugmentedMachine builds statechartx.Machine from spec and adds ID/name mappings.
 // Resolves guards/actions as stubs (extend with expr eval, registry, LLM).
-func (s *YamlMachineSpec) ToAugmentedMachine() (*AugmentedMachine, error) {
+func (s *YamlMachineSpec) ToAugmentedMachine(hirer AgentHirer) (*AugmentedMachine, error) {
 	if _, ok := s.Machine.States[s.Machine.Initial]; !ok {
 		return nil, fmt.Errorf("initial state %q not found", s.Machine.Initial)
 	}
@@ -88,7 +114,7 @@ func (s *YamlMachineSpec) ToAugmentedMachine() (*AugmentedMachine, error) {
 		return nil, fmt.Errorf("declareRecursive: %w", err)
 	}
 	statesSeen[initialFullpath] = struct{}{}
-	if err := s.configureRecursive(b, s.Machine.States, s.Machine.ID, &eventsSeen); err != nil {
+	if err := s.configureRecursive(b, s.Machine.States, s.Machine.ID, &eventsSeen, hirer); err != nil {
 		return nil, fmt.Errorf("configureRecursive: %w", err)
 	}
 
@@ -120,7 +146,7 @@ func (s *YamlMachineSpec) ToAugmentedMachine() (*AugmentedMachine, error) {
 }
 
 func (s *YamlMachineSpec) ToMachine() (*statechartx.Machine, error) {
-	aug, err := s.ToAugmentedMachine()
+	aug, err := s.ToAugmentedMachine(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +186,7 @@ func (s *YamlMachineSpec) declareRecursive(b *statechartx.MachineBuilder, states
 
 
 // configureRecursive configures transitions and timeouts recursively.
-func (s *YamlMachineSpec) configureRecursive(b *statechartx.MachineBuilder, states map[string]YamlState, prefix string, eventsSeen *map[string]struct{}) error {
+func (s *YamlMachineSpec) configureRecursive(b *statechartx.MachineBuilder, states map[string]YamlState, prefix string, eventsSeen *map[string]struct{}, hirer AgentHirer) error {
 	for id, st := range states {
 		fullpath := id
 		if prefix != "" {
@@ -186,10 +212,10 @@ func (s *YamlMachineSpec) configureRecursive(b *statechartx.MachineBuilder, stat
 				}
 			}
 			guard := s.resolveGuard(trans.Guard)
-			action := s.resolveAction(trans.Action)
+			action := s.resolveAction(hirer, trans.Action)
 			sb.On(evt, targetFull, guard, action)
 		}
-		if err := s.configureRecursive(b, st.States, fullpath, eventsSeen); err != nil {
+		if err := s.configureRecursive(b, st.States, fullpath, eventsSeen, hirer); err != nil {
 			return err
 		}
 	}
@@ -273,16 +299,43 @@ func (s *YamlMachineSpec) resolveGuard(name string) statechartx.Guard {
 }
 
 // resolveAction similar stub.
-func (s *YamlMachineSpec) resolveAction(name string) statechartx.Action {
+func (s *YamlMachineSpec) resolveAction(hirer AgentHirer, name string) statechartx.Action {
 	if name == "" {
 		return nil
 	}
-	// System actions dispatch, e.g. hire_agent:simple
+// System actions dispatch, e.g. hire_agent:simple
 	template, ok := strings.CutPrefix(name, "hire_agent:")
 	if ok {
+		if hirer == nil {
+			return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
+				slog.Info("hire_agent system action stub", "template", template)
+				return nil
+			}
+		}
 		return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
-			// TODO: GlobalRegistry.HireAgent(template) - avoid circular import
-			slog.Info("hire_agent system action stub", "template", template)
+			if err := hirer.HireAgent(template); err != nil {
+				slog.Error("hire_agent failed", "template", template, "err", err)
+				return err
+			}
+			slog.Info("hired agent via system action", "template", template)
+			return nil
+		}
+	}
+	// System actions dispatch, e.g. retire_agent:id123
+	id, ok := strings.CutPrefix(name, "retire_agent:")
+	if ok {
+		if hirer == nil {
+			return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
+				slog.Info("retire_agent system action stub", "id", id)
+				return nil
+			}
+		}
+		return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
+			if err := hirer.RetireAgent(id); err != nil {
+				slog.Error("retire_agent failed", "id", id, "err", err)
+				return err
+			}
+			slog.Info("retired agent via system action", "id", id)
 			return nil
 		}
 	}

@@ -1,0 +1,5 @@
+id: app-demo
+prompts:
+  welcome: "Hello {{.App.CompanyName}} in {{.App.Environment}}!"
+llm:
+  api_key: "{{.Env.API_KEY}}"  # From APP_API_KEY

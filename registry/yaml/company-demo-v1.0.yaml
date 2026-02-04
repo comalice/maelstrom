@@ -1,0 +1,8 @@
+id: company-demo
+version: 1.0
+messages:
+  intro: "Welcome to {{.App.CompanyName}} ({{.App.Environment}} environment)!"
+urls:
+  homepage: "{{.Env.HOME_URL}}"
+llm:
+  api_key: "{{.Env.API_KEY}}"
