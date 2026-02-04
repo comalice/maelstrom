@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"os"
 	"reflect"
 	"strings"
 )
@@ -29,12 +30,13 @@ type AppConfig struct {
 	// Default: ./yaml
 	RegistryDir string `envconfig:"REGISTRY_DIR" desc:"Directory for YAML registry files" default:"./yaml"`
 
-	DefaultModel        string         `envconfig:"DEFAULT_MODEL" desc:"Default LLM model" default:"claude-3-5-sonnet-20240620"`
-	DefaultProvider     string         `envconfig:"DEFAULT_PROVIDER" desc:"Default LLM provider" default:"anthropic"`
-	DefaultBaseURL      *string        `envconfig:"DEFAULT_BASE_URL" desc:"Default LLM base URL"`
-	DefaultTemperature  *float64       `envconfig:"DEFAULT_TEMPERATURE" desc:"Default temperature" default:"0.7"`
-	DefaultMaxTokens    *int           `envconfig:"DEFAULT_MAX_TOKENS" desc:"Default max tokens" default:"4096"`
-	DefaultAPIKey       string         `envconfig:"DEFAULT_API_KEY" desc:"Default API key (or env:VAR)"`
+	DefaultModel       string            `envconfig:"DEFAULT_MODEL" desc:"Default LLM model" default:"claude-3-5-sonnet-20240620"`
+	DefaultProvider    string            `envconfig:"DEFAULT_PROVIDER" desc:"Default LLM provider" default:"anthropic"`
+	DefaultBaseURL     *string           `envconfig:"DEFAULT_BASE_URL" desc:"Default LLM base URL"`
+	DefaultTemperature *float64          `envconfig:"DEFAULT_TEMPERATURE" desc:"Default temperature" default:"0.7"`
+	DefaultMaxTokens   *int              `envconfig:"DEFAULT_MAX_TOKENS" desc:"Default max tokens" default:"4096"`
+	DefaultAPIKey      string            `envconfig:"DEFAULT_API_KEY" desc:"Default API key (or env:VAR)"`
+	Variables          map[string]string `envconfig:"APP_VARS" desc:"App variables from APP_* env vars"`
 }
 
 // AppConfigFields returns slice of ConfigField from AppConfig struct tags via reflect.
@@ -62,10 +64,10 @@ func AppConfigFields() []ConfigField {
 // AppConfigSchema returns dynamic OpenAPI 3.0 schema as JSON bytes for Swagger UI.
 func AppConfigSchema() []byte {
 	fields := AppConfigFields()
-	props := map[string]map[string]interface{}{}
+	props := map[string]map[string]any{}
 	for _, f := range fields {
 		propName := strings.ToLower(f.Field[:1]) + f.Field[1:]
-		p := map[string]interface{}{
+		p := map[string]any{
 			"type":        "string",
 			"description": f.Desc,
 		}
@@ -74,18 +76,18 @@ func AppConfigSchema() []byte {
 		}
 		props[propName] = p
 	}
-	appConfigSchema := map[string]interface{}{
+	appConfigSchema := map[string]any{
 		"type":       "object",
 		"properties": props,
 	}
-	paths := map[string]interface{}{
-		"/config": map[string]interface{}{
-			"get": map[string]interface{}{
+	paths := map[string]any{
+		"/config": map[string]any{
+			"get": map[string]any{
 				"summary": "Configuration schema",
-				"responses": map[string]interface{}{
-					"200": map[string]interface{}{
+				"responses": map[string]any{
+					"200": map[string]any{
 						"description": "AppConfig OpenAPI schema",
-						"content": map[string]interface{}{
+						"content": map[string]any{
 							"application/json": map[string]interface{}{
 								"schema": map[string]interface{}{
 									"$ref": "#/components/schemas/AppConfig",
@@ -97,9 +99,9 @@ func AppConfigSchema() []byte {
 			},
 		},
 	}
-	openapi := map[string]interface{}{
+	openapi := map[string]any{
 		"openapi": "3.0.3",
-		"info": map[string]interface{}{
+		"info": map[string]any{
 			"title":       "Maelstrom Configuration",
 			"description": "Interactive docs for environment configuration fields.",
 			"version":     "1.0.0",
@@ -113,4 +115,17 @@ func AppConfigSchema() []byte {
 	}
 	b, _ := json.MarshalIndent(openapi, "", "  ")
 	return b
+}
+
+func LoadAppVariables(cfg *AppConfig) error {
+	cfg.Variables = map[string]string{}
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "APP_") {
+			parts := strings.SplitN(e, "=", 2)
+			if len(parts) == 2 {
+				cfg.Variables[strings.TrimPrefix(parts[0], "APP_")] = parts[1]
+			}
+		}
+	}
+	return nil
 }

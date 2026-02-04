@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 )
 
 type LLMConfig struct {
@@ -18,9 +19,13 @@ type LLMConfig struct {
 	MaxTokens  int
 }
 
-// Global config not used - per-spec LLMConfig
+type Caller interface {
+	Call(context.Context, LLMConfig, string) (string, error)
+}
 
-func Call(ctx context.Context, cfg LLMConfig, prompt string) (string, error) {
+type HTTPClient struct{}
+
+func (h *HTTPClient) Call(ctx context.Context, cfg LLMConfig, prompt string) (string, error) {
 	var url string
 	var headers map[string]string
 	var payload map[string]interface{}
@@ -115,4 +120,33 @@ func Call(ctx context.Context, cfg LLMConfig, prompt string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no content in response")
+}
+
+var DefaultCaller Caller = &HTTPClient{}
+
+func Call(ctx context.Context, cfg LLMConfig, prompt string) (string, error) {
+	return DefaultCaller.Call(ctx, cfg, prompt)
+}
+
+type CallRec struct {
+	Config LLMConfig
+	Prompt string
+}
+
+type MockCaller struct {
+	mu    sync.Mutex
+	Calls []CallRec
+}
+
+func (m *MockCaller) Call(ctx context.Context, cfg LLMConfig, prompt string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Calls = append(m.Calls, CallRec{Config: cfg, Prompt: prompt})
+	return "{}", nil
+}
+
+func (m *MockCaller) ResetCalls() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Calls = nil
 }

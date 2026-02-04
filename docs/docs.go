@@ -168,7 +168,7 @@ const docTemplate = `{
                 },
                 "content": {
                     "type": "object",
-                    "additionalProperties": true
+                    "additionalProperties": {}
                 },
                 "filename": {
                     "type": "string"

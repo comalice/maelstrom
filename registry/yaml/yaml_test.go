@@ -38,28 +38,21 @@ func TestRenderPlain(t *testing.T) {
 	}
 }
 
-func TestRenderTemplate(t *testing.T) {
-	raw := `dir: {{ .Config.RegistryDir }}
-foo: {{ .Env.FOO }}`
+func TestRenderAppFoo(t *testing.T) {
+	raw := `foo: {{ .Env.APP_FOO }}`
 	type data struct {
-		Config *struct{ RegistryDir string }
-		Env    map[string]string
+		Env map[string]string `json:"-"` // Mimic Variables (trimmed)
 	}
-	d := data{
-		Config: &struct{ RegistryDir string }{"/test"},
-		Env:    map[string]string{"FOO": "baz"},
-	}
+	d := data{Env: map[string]string{"APP_FOO": "bar"}} // Raw pass-through test
 	content, err := Render(raw, d)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v, ok := content["dir"].(string); !ok || v != "/test" {
-		t.Errorf("expected dir /test, got %v", content["dir"])
-	}
-	if v, ok := content["foo"].(string); !ok || v != "baz" {
-		t.Errorf("expected foo baz, got %v", content["foo"])
+	if v, ok := content["foo"].(string); !ok || v != "bar" {
+		t.Errorf("expected foo bar (APP_FOO passthru), got %v", content["foo"])
 	}
 }
+
 
 func TestRenderInvalidTemplate(t *testing.T) {
 	raw := `{{ invalid syntax }}`

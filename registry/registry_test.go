@@ -2,23 +2,26 @@ package registry
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/comalice/maelstrom/config"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSetConfig(t *testing.T) {
 	r := New()
 	cfg := &config.AppConfig{RegistryDir: "/test"}
-	os.Clearenv() // Reset env
-	os.Setenv("FOO", "baz")
+	_ = config.LoadAppVariables(cfg)
+	os.Setenv("APP_FOO", "baz")
+	_ = config.LoadAppVariables(cfg)
 	r.SetConfig(cfg)
 	if r.Config.RegistryDir != "/test" {
 		t.Errorf("expected Config.RegistryDir /test")
 	}
-	if v, ok := r.Env["FOO"]; !ok || v != "baz" {
-		t.Errorf("expected Env.FOO=baz")
+	if v, ok := r.Config.Variables["FOO"]; !ok || v != "baz" {
+		t.Errorf("expected Config.Variables.FOO=baz")
 	}
 }
 
@@ -35,10 +38,10 @@ func TestListRaw(t *testing.T) {
 
 func TestListRendered(t *testing.T) {
 	r := New()
-	r.Config = &config.AppConfig{RegistryDir: "/testdir"}
-	r.Env = map[string]string{"FOO": "baz"}
+	cfg := &config.AppConfig{RegistryDir: "/testdir", Variables: map[string]string{"FOO": "baz"}}
+	r.SetConfig(cfg)
 	r.items = map[string]*YAMLImport{
-		"test.yaml": {Raw: `dir: {{ .Config.RegistryDir }}
+		"test.yaml": {Raw: `dir: {{ .App.RegistryDir }}
 foo: {{ .Env.FOO }}`, Version: "1.0", Active: true},
 	}
 	list := r.List()
@@ -103,7 +106,7 @@ func TestList_Resolves(t *testing.T) {
 	assert.True(t, testItem.Active)
 	content := testItem.Content
 	assert.NotNil(t, content["llm"])
-	resolved := content["resolved"].(map[string]interface{})
+	resolved := content["resolved"].(map[string]any)
 	assert.Equal(t, "yaml-model", resolved["model"])
 	assert.Equal(t, "yaml-provider", resolved["provider"])
 	assert.Equal(t, "yaml-key", resolved["api_key"])
@@ -114,8 +117,47 @@ func TestList_Resolves(t *testing.T) {
 
 	// Test no llm - defaults
 	noLlmItem := list[1]
-	resolvedNoLlm := noLlmItem.Content["resolved"].(map[string]interface{})
+	resolvedNoLlm := noLlmItem.Content["resolved"].(map[string]any)
 	assert.Equal(t, "app-model", resolvedNoLlm["model"])
 	assert.Equal(t, "app-provider", resolvedNoLlm["provider"])
 	assert.Equal(t, "app-key", resolvedNoLlm["api_key"])
+}
+
+func TestHireAgent(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "simple.yaml"), []byte(`name: simple
+machine:
+  id: simple
+  initial: idle
+  states:
+    idle: {}`), 0644))
+	r := New()
+	r.AgentsDir = dir
+	cfg := &config.AppConfig{Variables: map[string]string{}}
+	r.SetConfig(cfg)
+	err := r.HireAgent("simple")
+	assert.NoError(t, err)
+	assert.Equal(t, 1, int(r.NumAgents.Load()))
+	assert.Len(t, r.Machines, 1)
+}
+
+func TestMaxAgents(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "simple.yaml"), []byte(`name: simple
+machine:
+  id: simple
+  initial: idle
+  states:
+    idle: {}`), 0644))
+	r := New()
+	r.AgentsDir = dir
+	cfg := &config.AppConfig{Variables: map[string]string{}}
+	r.SetConfig(cfg)
+	for range make([]struct{}, 5) {
+		err := r.HireAgent("simple")
+		assert.NoError(t, err)
+	}
+	err := r.HireAgent("simple")
+	assert.Error(t, err)
+	assert.Equal(t, 5, int(r.NumAgents.Load()))
 }

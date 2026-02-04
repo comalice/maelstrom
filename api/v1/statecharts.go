@@ -104,7 +104,11 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 	mu.Lock()
 	defer mu.Unlock()
 	path := instancePath(mid, iid)
-	initialBytes, _ := json.Marshal(req.InitialContext)
+	initialBytes, err := json.Marshal(req.InitialContext)
+	if err != nil {
+		http.Error(w, "invalid initialContext JSON", http.StatusBadRequest)
+		return
+	}
 	state := &InstanceState{Initial: json.RawMessage(initialBytes), History: []EventLog{}}
 	if err := saveInstanceState(path, state); err != nil {
 		http.Error(w, fmt.Sprintf("save instance: %v", err), http.StatusInternalServerError)
@@ -112,7 +116,7 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	bgctx := context.Background()
 	initialCtx := statechartx.NewContext()
-	if m, ok := req.InitialContext.(map[string]interface{}); ok {
+	if m, ok := req.InitialContext.(map[string]any); ok {
 		initialCtx.LoadAll(m)
 	}
 	rt := statechartx.NewRuntime(aug.Machine, initialCtx)
@@ -189,7 +193,7 @@ func sendEvent(w http.ResponseWriter, r *http.Request) {
 		}
 		bgctx := context.Background()
 		initialCtx := statechartx.NewContext()
-		if m, ok := initialData.(map[string]interface{}); ok {
+		if m, ok := initialData.(map[string]any); ok {
 			initialCtx.LoadAll(m)
 		}
 		rt = statechartx.NewRuntime(aug.Machine, initialCtx)
@@ -204,10 +208,9 @@ func sendEvent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		rt.EmbedContext()
-		v, _ := instances.LoadOrStore(mid, make(map[string]*statechartx.Runtime))
-		instMap := v.(map[string]*statechartx.Runtime)
-		instMap[iid] = rt
-		instances.Store(mid, instMap)
+		midMapIface, _ := instances.LoadOrStore(mid, new(sync.Map))
+		midMap := midMapIface.(*sync.Map)
+		midMap.Store(iid, rt)
 	}
 	eid, ok := aug.EventIDByName[evtReq.Type]
 	if !ok {
@@ -217,7 +220,11 @@ func sendEvent(w http.ResponseWriter, r *http.Request) {
 	evt := statechartx.Event{ID: eid, Data: evtReq.Data}
 	rt.EmbedContext()
 	rt.ProcessEvent(evt)
-	evtDataBytes, _ := json.Marshal(evtReq.Data)
+	evtDataBytes, err := json.Marshal(evtReq.Data)
+	if err != nil {
+		slog.Warn("marshal event data", "mid", mid, "iid", iid, "err", err)
+		evtDataBytes = []byte("{}")
+	}
 	newLog := EventLog{
 		Type: evtReq.Type,
 		Data: json.RawMessage(evtDataBytes),
@@ -253,11 +260,17 @@ func deleteInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	// Cleanup in-memory runtime
 	if v, ok := instances.Load(mid); ok {
-		if instMap, ok := v.(map[string]*statechartx.Runtime); ok {
-			if rt, ok := instMap[iid]; ok {
-				rt.Stop()
-				delete(instMap, iid)
-				instances.Store(mid, instMap)
+		if midMapIface, typeOk := v.(*sync.Map); typeOk {
+			rtIface, rtOk := midMapIface.Load(iid)
+			if rtOk {
+				if rt, castOk := rtIface.(*statechartx.Runtime); castOk {
+					if err := rt.Stop(); err != nil {
+						slog.Error("failed to stop runtime", "mid", mid, "iid", iid, "err", err)
+						http.Error(w, fmt.Sprintf("failed to stop runtime: %v", err), http.StatusInternalServerError)
+						return
+					}
+					midMapIface.Delete(iid)
+				}
 			}
 		}
 	}

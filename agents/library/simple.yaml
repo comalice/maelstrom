@@ -1,0 +1,17 @@
+name: simple-agent
+version: 1.0
+description: Minimal agent for testing
+machine:
+  id: simple
+  initial: idle
+  states:
+    idle:
+      description: Waiting
+      on:
+        ping:
+          target: active
+    active:
+      description: Responding
+      on:
+        pong:
+          target: idle

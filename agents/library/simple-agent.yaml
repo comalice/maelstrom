@@ -1,0 +1,7 @@
+name: simple-agent
+version: 1.0
+machine:
+  id: simple
+  initial: idle
+  states:
+    idle: {}

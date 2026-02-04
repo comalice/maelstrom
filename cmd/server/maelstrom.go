@@ -54,6 +54,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := config.LoadAppVariables(&cfg); err != nil {
+		slog.Error("failed to load app variables", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("app variables loaded", "variables_count", len(cfg.Variables))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	slog.Info("Starting server", "addr", cfg.ListenAddr)
 

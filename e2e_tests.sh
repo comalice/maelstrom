@@ -155,7 +155,7 @@ test_template() {
   TEST_DIR=$(mktemp -d -t maelstrom_test_template_XXXXXX)
   export REGISTRY_DIR="$TEST_DIR"
   export LISTEN_ADDR=":$test_port"
-  export FOO=baz
+  export APP_FOO=baz
   if [ $VERBOSE = 1 ]; then
     ./bin/server &
   else
@@ -170,7 +170,7 @@ test_template() {
 
   # Create templated YAML
   cat > "$TEST_DIR/templ-v1.0.yaml" << 'EOF'
-dir: {{ .Config.RegistryDir }}
+dir: {{ .App.RegistryDir }}
 foo: {{ .Env.FOO }}
 EOF
   sleep 2

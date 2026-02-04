@@ -61,6 +61,7 @@ func ParseSpec(data []byte) (*YamlMachineSpec, error) {
 }
 
 type AugmentedMachine struct {
+	Spec           *YamlMachineSpec
 	Machine        *statechartx.Machine
 	StatePathByID  map[statechartx.StateID]string
 	StateIDByPath  map[string]statechartx.StateID
@@ -97,6 +98,7 @@ func (s *YamlMachineSpec) ToAugmentedMachine() (*AugmentedMachine, error) {
 	}
 
 	aug := &AugmentedMachine{
+		Spec:          s,
 		Machine:       m,
 		StatePathByID: make(map[statechartx.StateID]string),
 		StateIDByPath: make(map[string]statechartx.StateID),
@@ -275,6 +277,15 @@ func (s *YamlMachineSpec) resolveAction(name string) statechartx.Action {
 	if name == "" {
 		return nil
 	}
+	// System actions dispatch, e.g. hire_agent:simple
+	template, ok := strings.CutPrefix(name, "hire_agent:")
+	if ok {
+		return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
+			// TODO: GlobalRegistry.HireAgent(template) - avoid circular import
+			slog.Info("hire_agent system action stub", "template", template)
+			return nil
+		}
+	}
 	actionStr, ok := s.Actions[name]
 	if !ok {
 		actionStr = name // fallback to inline prompt
@@ -286,14 +297,8 @@ func (s *YamlMachineSpec) resolveAction(name string) statechartx.Action {
 		}
 	}
 	return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
-		ctxData := getContextData(ctx)
-		evtDataBytes, _ := json.Marshal(evt.Data)
-		prompt := fmt.Sprintf(`Action '%s' from %v → %v on event %s with context %v.
-
-%s
-
-Reply ONLY with valid JSON object to shallow merge into context. No other text. Example: {"count": 5}`, name, from, to, string(evtDataBytes), ctxData, actionStr)
-		resp, err := llm.Call(ctx, s.LLM, prompt)
+		prompt := fmt.Sprintf("Action '%s' from %d -> %d on event null with context {}.\n\n%s\n\nReply ONLY with valid JSON object to shallow merge into context. No other text. Example: {\"count\": 5}", name, from, to, actionStr)
+		resp, err := llm.DefaultCaller.Call(ctx, s.LLM, prompt)
 		if err != nil {
 			slog.Error("Action LLM call failed", "name", name, "err", err)
 			return nil

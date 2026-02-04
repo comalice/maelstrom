@@ -14,7 +14,7 @@ definitions:
       active:
         type: boolean
       content:
-        additionalProperties: true
+        additionalProperties: {}
         type: object
       filename:
         type: string
