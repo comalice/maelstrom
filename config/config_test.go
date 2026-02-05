@@ -9,7 +9,7 @@ import (
 
 func TestAppConfigFields(t *testing.T) {
 	fields := AppConfigFields()
-	assert.Len(t, fields, 11, "AppConfig should have 11 fields")
+	assert.Len(t, fields, 12, "AppConfig should have 12 fields")
 
 	assert.Equal(t, "LISTEN_ADDR", fields[0].Env)
 	assert.Equal(t, "REGISTRY_DIR", fields[1].Env)

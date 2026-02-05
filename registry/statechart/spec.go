@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/comalice/maelstrom/internal/llm"
+	"github.com/comalice/maelstrom/internal/tools"
 	"github.com/expr-lang/expr"
 	"gopkg.in/yaml.v3"
 	"github.com/comalice/statechartx"
@@ -41,7 +42,7 @@ type YamlMachineSpec struct {
 	Description string            `yaml:"description,omitempty"`
 	Machine     YamlMachine       `yaml:"machine"`
 	LLM         llm.LLMConfig `yaml:"llm,omitempty"`
-	Actions     map[string]string `yaml:"actions,omitempty"` // name -> expr/code/ref
+	Actions     map[string]any `yaml:"actions,omitempty"` // name -> expr/code/ref/map[llm_with_tools]
 	Guards      map[string]string `yaml:"guards,omitempty"`  // name -> expr/code/ref
 }
 
@@ -66,7 +67,7 @@ type YamlState struct {
 type YamlTransition struct {
 	Target string `yaml:"target"`
 	Guard  string `yaml:"guard,omitempty"`
-	Action string `yaml:"action,omitempty"`
+	Action any `yaml:"action,omitempty"`
 }
 
 // ParseSpec unmarshals YAML bytes to spec.
@@ -237,6 +238,15 @@ func mergeContextData(ctx context.Context, patch map[string]any) {
 	}
 }
 
+func getString(cfg map[string]any, key string) string {
+	if v, ok := cfg[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 func (s *YamlMachineSpec) resolveGuard(name string) statechartx.Guard {
 	if name == "" {
 		return nil
@@ -299,9 +309,17 @@ func (s *YamlMachineSpec) resolveGuard(name string) statechartx.Guard {
 }
 
 // resolveAction similar stub.
-func (s *YamlMachineSpec) resolveAction(hirer AgentHirer, name string) statechartx.Action {
-	if name == "" {
+func (s *YamlMachineSpec) resolveAction(hirer AgentHirer, actionSpec any) statechartx.Action {
+	if actionSpec == nil {
 		return nil
+	}
+	var name string
+	content := actionSpec
+	if strSpec, ok := actionSpec.(string); ok {
+		name = strSpec
+		if act, ok := s.Actions[name]; ok {
+			content = act
+		}
 	}
 // System actions dispatch, e.g. hire_agent:simple
 	template, ok := strings.CutPrefix(name, "hire_agent:")
@@ -339,9 +357,127 @@ func (s *YamlMachineSpec) resolveAction(hirer AgentHirer, name string) statechar
 			return nil
 		}
 	}
-	actionStr, ok := s.Actions[name]
-	if !ok {
-		actionStr = name // fallback to inline prompt
+	// llm_with_tools dispatch
+	if toolActionMap, ok := content.(map[string]any); ok {
+		lwtI, has := toolActionMap["llm_with_tools"]
+		if has {
+			lwtCfgI, _ := lwtI.(map[string]any)
+			lwtCfg := lwtCfgI
+			return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
+				ctxData := getContextData(ctx)
+				jsonCtxB, _ := json.Marshal(ctxData)
+				jsonEvtB, _ := json.Marshal(evt.Data)
+				jsonCtx := string(jsonCtxB)
+				jsonEvt := string(jsonEvtB)
+
+				system := getString(lwtCfg, "system")
+				promptTmpl := getString(lwtCfg, "prompt")
+				userPrompt := fmt.Sprintf("%s\n\nCurrent context: %s\nEvent data: %s", promptTmpl, jsonCtx, jsonEvt)
+
+				var maxIter = 5
+				if miI, ok := lwtCfg["max_iter"]; ok {
+					if mi, ok := miI.(float64); ok {
+						maxIter = int(mi)
+					} else if mii, ok := miI.(int); ok {
+						maxIter = mii
+					}
+				}
+
+				toolsI := lwtCfg["tools"]
+				toolNamesI, hasTools := toolsI.([]any)
+				if !hasTools {
+					slog.Warn("llm_with_tools missing 'tools' array")
+					return nil
+				}
+				var toolNames []string
+				for _, ti := range toolNamesI {
+					if ts, ok := ti.(string); ok {
+						toolNames = append(toolNames, ts)
+					}
+				}
+				if len(toolNames) == 0 {
+					slog.Warn("no valid tool names in llm_with_tools")
+					return nil
+				}
+
+				var toolSchemas []tools.ToolSchema
+				for _, tn := range toolNames {
+					if tool := tools.GlobalTools.Get(tn); tool != nil {
+						toolSchemas = append(toolSchemas, tool.Schema())
+					} else {
+						slog.Warn("tool not found", "name", tn)
+					}
+				}
+
+				toolsJSONB, _ := json.MarshalIndent(toolSchemas, "", "  ")
+				toolsJSON := string(toolsJSONB)
+
+				systemPrompt := fmt.Sprintf("You have access to these tools. To use a tool, output ONLY {\"tool_use\": {\"name\": \"tool_name\", \"params\": {...}}}\n\n%s\n\nTool results provided next message.\n\nWhen finished, output JSON patch for context (no tool_use).", toolsJSON)
+
+				if system != "" {
+					systemPrompt += "\n\n" + system
+				}
+
+				msgs := []string{systemPrompt, userPrompt}
+				for iter := 0; iter < maxIter; iter++ {
+					fullPrompt := strings.Join(msgs, "\n\n\n---\n\n")
+					resp, err := llm.DefaultCaller.Call(ctx, s.LLM, fullPrompt)
+					if err != nil {
+						slog.Error("llm_with_tools LLM call failed", "iter", iter, "err", err)
+						return err
+					}
+
+					var respMap map[string]any
+					if err := json.Unmarshal([]byte(resp), &respMap); err != nil {
+						slog.Warn("llm_with_tools non-JSON, try patch", "resp", resp[:300], "err", err)
+						var patch map[string]any
+						if jerr := json.Unmarshal([]byte(resp), &patch); jerr == nil {
+							mergeContextData(ctx, patch)
+						}
+						return nil
+					}
+
+					if toolUseI, hasTU := respMap["tool_use"]; hasTU && toolUseI != nil {
+						if tuMap, ok := toolUseI.(map[string]any); ok && tuMap != nil {
+							if tnameI, hasName := tuMap["name"]; hasName && tnameI != nil {
+								if tname, tnOK := tnameI.(string); tnOK {
+									if tparamsI, hasParams := tuMap["params"]; hasParams && tparamsI != nil {
+										if tparams, tpOK := tparamsI.(map[string]any); tpOK && tparams != nil {
+											if tool := tools.GlobalTools.Get(tname); tool != nil {
+												toolRes, terr := tool.Execute(ctx, tparams)
+												if terr != nil {
+													msgs = append(msgs, fmt.Sprintf("Tool '%s' failed: %v", tname, terr))
+												} else {
+													res := tools.Result{Content: toolRes}
+													resJSONB, _ := json.MarshalIndent(res, "", "  ")
+													msgs = append(msgs, fmt.Sprintf("Tool '%s' result:\n%s", tname, string(resJSONB)))
+												}
+												continue
+											}
+										}
+									}
+								}
+							}
+						} else {
+							slog.Warn("tool_use not map object", "tool_use", toolUseI)
+						}
+					}
+					// final
+					mergeContextData(ctx, respMap)
+					slog.Info("llm_with_tools completed", "final_patch", respMap)
+					return nil
+				}
+				slog.Warn("llm_with_tools max iterations reached without final")
+				return nil
+			}
+		}
+	}
+
+	// fallback simple LLM action
+	actionStr, isStr := content.(string)
+	if !isStr {
+		slog.Warn("non-string non-llm_with_tools action skipped", "name", name, "content_type", fmt.Sprintf("%T", content))
+		return nil
 	}
 	if s.LLM.Provider == "" {
 		return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
@@ -350,7 +486,18 @@ func (s *YamlMachineSpec) resolveAction(hirer AgentHirer, name string) statechar
 		}
 	}
 	return func(ctx context.Context, evt *statechartx.Event, from, to statechartx.StateID) error {
-		prompt := fmt.Sprintf("Action '%s' from %d -> %d on event null with context {}.\n\n%s\n\nReply ONLY with valid JSON object to shallow merge into context. No other text. Example: {\"count\": 5}", name, from, to, actionStr)
+		ctxData := getContextData(ctx)
+		jsonCtxB, _ := json.Marshal(ctxData)
+		jsonEvtB, _ := json.Marshal(evt.Data)
+		prompt := fmt.Sprintf(`Action '%s'.
+State transition from %d to %d.
+Current context: %s
+Event data: %s
+
+%s
+
+Reply ONLY with valid JSON object to merge into context. No other text.
+Example: {"key": "value", "count": 5}`, name, from, to, string(jsonCtxB), string(jsonEvtB), actionStr)
 		resp, err := llm.DefaultCaller.Call(ctx, s.LLM, prompt)
 		if err != nil {
 			slog.Error("Action LLM call failed", "name", name, "err", err)
@@ -358,11 +505,11 @@ func (s *YamlMachineSpec) resolveAction(hirer AgentHirer, name string) statechar
 		}
 		var patch map[string]any
 		if err := json.Unmarshal([]byte(resp), &patch); err != nil {
-			slog.Warn("Action JSON parse failed", "name", name, "resp", resp, "err", err)
+			slog.Warn("Action JSON parse failed", "name", name, "resp", resp[:300]+"...", "err", err)
 			return nil
 		}
 		mergeContextData(ctx, patch)
-		slog.Info("Action merged patch", "name", name, "patch", patch)
+		slog.Info("Action simple LLM merged patch", "name", name, "patch", patch)
 		return nil
 	}
 }

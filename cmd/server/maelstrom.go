@@ -16,9 +16,10 @@ import (
 	"text/tabwriter"
 
 	"github.com/comalice/maelstrom/registry"
+	"github.com/comalice/maelstrom/internal/tools"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	
+
 	v1 "github.com/comalice/maelstrom/api/v1"
 	"github.com/comalice/maelstrom/config"
 	swagger "github.com/comalice/maelstrom/swagger"
@@ -89,6 +90,10 @@ func main() {
 		slog.Error("failed to init registry watcher", "error", err)
 		os.Exit(1)
 	}
+
+	GlobalTools := tools.NewToolRegistry()
+	GlobalTools.Init()
+	reg.Tools = GlobalTools
 
 	items := reg.List()
 	var machines []string

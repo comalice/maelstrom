@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/comalice/maelstrom/config"
+	"github.com/comalice/maelstrom/internal/tools"
 	"github.com/comalice/maelstrom/registry/statechart"
 	"github.com/comalice/maelstrom/registry/yaml"
 	"github.com/fsnotify/fsnotify"
@@ -19,13 +20,14 @@ import (
 )
 
 type YAMLImport struct {
-	Content             map[string]any       `json:"content"`
-	Version             string              `json:"version"`
-	Active              bool                `json:"active"`
-	Filename            string              `json:"filename"`
-	Type                string              `json:"type,omitempty"`
+	Content             map[string]any             `json:"content"`
+	Version             string                    `json:"version"`
+	Active              bool                      `json:"active"`
+	Filename            string                    `json:"filename"`
+	Type                string                    `json:"type,omitempty"`
+	Tools               []tools.ToolSchema        `json:"tools,omitempty"`
 	StatechartAugmented *statechart.AugmentedMachine `json:"-"`
-	Raw                 string              `json:"-"`
+	Raw                 string                    `json:"-"`
 }
 
 type RawYAML struct {
@@ -50,6 +52,7 @@ type Registry struct {
 	NumAgents      atomic.Int32                     `json:"num_agents"`
 	MaxLLMCalls    atomic.Int32                     `json:"max_llm_calls"`
 	Machines       map[string]*statechart.AugmentedMachine `json:"-"`
+	Tools          *tools.ToolRegistry                    `json:"tools"`
 }
 
 var ErrMaxAgents = errors.New("max agents reached")
@@ -220,6 +223,9 @@ func (r *Registry) List() []*YAMLImport {
 			}
 		} else {
 			newItem.Type = "yaml"
+		}
+		if r.Tools != nil {
+			newItem.Tools = r.Tools.List()
 		}
 		list = append(list, newItem)
 	}

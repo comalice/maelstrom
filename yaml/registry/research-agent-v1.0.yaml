@@ -1,0 +1,21 @@
+name: research-agent-v1.0
+version: 1.0.0
+description: Demo researcher agent with tools
+machine:
+  id: researcher
+  initial: idle
+  states:
+    idle:
+      on:
+        research:
+          target: researching
+          action: research
+    researching:
+      type: final
+actions:
+  research:
+    llm_with_tools:
+      tools: [web_search, read_file]
+      system: 'You are a researcher. Use tools to answer {{.Event.Data.question}}.'
+      prompt: '{{.Event.Data.question}} Context: {{.Context}}'
+      max_iterations: 5
