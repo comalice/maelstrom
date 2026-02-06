@@ -1,0 +1,28 @@
+name: chat-agent
+version: 1.0
+llm:  # Phase 1: Hierarchy fallback
+  provider: "{{if .Env.LLM_PROVIDER}}{{.Env.LLM_PROVIDER}}{{else if .App.DefaultProvider}}{{.App.DefaultProvider}}{{else}}anthropic{{end}}"
+  model: "{{if .Env.DEFAULT_MODEL}}{{.Env.DEFAULT_MODEL}}{{else}}{{.App.DefaultModel}}{{end}}"
+  api_key: "{{.Env.LLM_API_KEY}}"
+machine:
+  id: root
+  initial: idle
+  context:
+    history: []  # Persists chat log
+  states:
+    idle:
+      on:
+        MESSAGE:
+          target: idle
+          action: process_message
+actions:
+  process_message:
+    llm_with_tools:
+      tools: []
+      system: |
+        You are {{.App.CompanyName}}'s chat agent in {{.App.Env}} mode.
+        Be helpful & conversational.
+        Output ONLY valid JSON: {"response": "your reply", "history": [updated array with new {user: evt.Data.message, msg: evt.Data.message, resp: your reply} + prior ctx.history]}
+      prompt: |
+        New chat turn.
+        Respond:

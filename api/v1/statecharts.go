@@ -37,6 +37,7 @@ func StatechartsRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", listMachines)
 	r.Post("/{machineID}/instances", createInstance)
+	r.Get("/{machineID}/instances/{instID}", getInstance)
 	r.Post("/{machineID}/instances/{instID}/events", sendEvent)
 	r.Delete("/{machineID}/instances/{instID}", deleteInstance)
 	return r
@@ -244,6 +245,76 @@ func sendEvent(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Error("json encode", "err", err)
 	}
+}
+
+func getInstance(w http.ResponseWriter, r *http.Request) {
+	mid := chi.URLParam(r, "machineID")
+	iid := chi.URLParam(r, "instID")
+	path := instancePath(mid, iid)
+	mu := getInstanceMutex(mid, iid)
+	mu.Lock()
+	defer mu.Unlock()
+	state, ok, err := loadInstanceState(path)
+	if err != nil || !ok {
+		http.Error(w, "instance not found", http.StatusNotFound)
+		return
+	}
+	aug, err := getAugmentedMachine(mid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	// Reuse in-memory runtime (like sendEvent)
+	var rt *statechartx.Runtime
+	if v, ok := instances.Load(mid); ok {
+		midMap := v.(*sync.Map)
+		rtIface, loaded := midMap.Load(iid)
+		if loaded {
+			rt = rtIface.(*statechartx.Runtime)
+		}
+	}
+	if rt == nil {
+		// Fallback: rebuild + replay
+		var initialData any
+		if err := json.Unmarshal(state.Initial, &initialData); err != nil {
+			slog.Error("unmarshal initial", "iid", iid, "err", err)
+			initialData = map[string]any{}
+		}
+		bgctx := context.Background()
+		initialCtx := statechartx.NewContext()
+		if m, ok := initialData.(map[string]any); ok {
+			initialCtx.LoadAll(m)
+		}
+		rt = statechartx.NewRuntime(aug.Machine, initialCtx)
+		if err := rt.Start(bgctx); err != nil {
+			slog.Error("rt.Start failed", "mid", mid, "iid", iid, "err", err)
+			http.Error(w, "failed to start runtime", http.StatusInternalServerError)
+			return
+		}
+		if err := replayRuntime(rt, aug, state.History); err != nil {
+			slog.Error("replay failed", "mid", mid, "iid", iid, "err", err)
+			http.Error(w, fmt.Sprintf("replay failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		rt.EmbedContext()
+		midMapIface, _ := instances.LoadOrStore(mid, new(sync.Map))
+		midMap := midMapIface.(*sync.Map)
+		midMap.Store(iid, rt)
+	}
+	rt.EmbedContext()
+	currentID := rt.GetCurrentState()
+	type Resp struct {
+		Current      string                 `json:"current"`
+		Context      map[string]interface{} `json:"context"`
+		HistoryCount int                    `json:"history_count"`
+	}
+	resp := Resp{
+		Current:      aug.StatePathByID[currentID],
+		Context:      rt.Ctx().GetAll(),
+		HistoryCount: len(state.History),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func deleteInstance(w http.ResponseWriter, r *http.Request) {

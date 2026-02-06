@@ -28,7 +28,7 @@ type HTTPClient struct{}
 func (h *HTTPClient) Call(ctx context.Context, cfg LLMConfig, prompt string) (string, error) {
 	var url string
 	var headers map[string]string
-	var payload map[string]interface{}
+	var payload map[string]any
 
 	switch cfg.Provider {
 	case "anthropic":
@@ -38,7 +38,7 @@ func (h *HTTPClient) Call(ctx context.Context, cfg LLMConfig, prompt string) (st
 			"x-api-key":         cfg.APIKey,
 			"anthropic-version": "2023-06-01",
 		}
-		payload = map[string]interface{}{
+		payload = map[string]any{
 			"model":       cfg.Model,
 			"max_tokens":  cfg.MaxTokens,
 			"temperature": cfg.Temp,
@@ -50,10 +50,27 @@ func (h *HTTPClient) Call(ctx context.Context, cfg LLMConfig, prompt string) (st
 	case "openai":
 		url = cfg.Endpoint + "/v1/chat/completions"
 		headers = map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + cfg.APIKey,
+			"Content-Type":   "application/json",
+			"Authorization":  "Bearer " + cfg.APIKey,
 		}
-		payload = map[string]interface{}{
+		payload = map[string]any{
+			"model":       cfg.Model,
+			"max_tokens":  cfg.MaxTokens,
+			"temperature": cfg.Temp,
+			"messages": []map[string]string{{
+				"role": "user",
+				"content": prompt,
+			}},
+		}
+	case "openrouter":
+		url = cfg.Endpoint + "/api/v1/chat/completions"
+		headers = map[string]string{
+			"Content-Type":   "application/json",
+			"Authorization":  "Bearer " + cfg.APIKey,
+			"HTTP-Referer":   "https://maelstrom-stillpoint.com",
+			"X-Title":        "Maelstrom CLI Demo",
+		}
+		payload = map[string]any{
 			"model":       cfg.Model,
 			"max_tokens":  cfg.MaxTokens,
 			"temperature": cfg.Temp,

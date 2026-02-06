@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/comalice/maelstrom/internal/llm"
 	yamlv3 "gopkg.in/yaml.v3"
+	"strings"
 )
 
 type YAMLImport struct {
@@ -79,10 +80,15 @@ func (r *Registry) SetConfig(cfg *config.AppConfig) {
 }
 
 func (r *Registry) scanDir() error {
-	files, err := filepath.Glob(filepath.Join(r.dir, "*.{yaml,yml}"))
+	yamlFiles, err := filepath.Glob(filepath.Join(r.dir, "*.yaml"))
 	if err != nil {
 		return err
 	}
+	ymlFiles, err := filepath.Glob(filepath.Join(r.dir, "*.yml"))
+	if err != nil {
+		return err
+	}
+	files := append(yamlFiles, ymlFiles...)
 	for _, f := range files {
 		name := filepath.Base(f)
 		if err := r.Import(name); err != nil {
@@ -176,12 +182,16 @@ func (r *Registry) List() []*YAMLImport {
 		if newItem.Raw != "" {
 			if r.Config != nil {
 				type renderData struct {
-					App *config.AppConfig `json:"-"`
-					Env    map[string]string `json:"-"`
+					App     *config.AppConfig `json:"-"`
+					Env     map[string]string `json:"-"`
+					Context any               `json:"-"`
+					Event   any               `json:"-"`
 				}
 				data := renderData{
-					App: r.Config,
-					Env: r.Config.Variables,
+					App:     r.Config,
+					Env:     r.Config.Variables,
+					Context: map[string]any{"history": []any{}},     // Dummy for static YAML render (.Context.history); runtime: rt.EmbedContext()
+					Event:   map[string]any{"Data": map[string]string{"message": "[no message]"}}, // Dummy for static render (.Event.Data.message in prompts); runtime Event passed to actions
 				}
 				newItem.Content, renderErr = yaml.Render(newItem.Raw, data)
 				if renderErr != nil {
@@ -250,6 +260,17 @@ func toLLMConfig(res *config.ResolvedMachineConfig) llm.LLMConfig {
 	endpoint := ""
 	if res.BaseURL != nil {
 		endpoint = *res.BaseURL
+	}
+	if endpoint == "" {
+		defMap := map[string]string{
+			"anthropic":  "https://api.anthropic.com",
+			"openai":     "https://api.openai.com",
+			"openrouter": "https://openrouter.ai",
+		}
+		prov := strings.ToLower(res.Provider)
+		if def, ok := defMap[prov]; ok {
+			endpoint = def
+		}
 	}
 	temp := float64(0.7)
 	if res.Temperature != nil {

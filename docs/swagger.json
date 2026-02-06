@@ -167,10 +167,61 @@
                 "filename": {
                     "type": "string"
                 },
+                "tools": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/tools.ToolSchema"
+                    }
+                },
                 "type": {
                     "type": "string"
                 },
                 "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "tools.ParamProperty": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "tools.ParamSchema": {
+            "type": "object",
+            "properties": {
+                "properties": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/tools.ParamProperty"
+                    }
+                },
+                "required": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
+        "tools.ToolSchema": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string"
+                },
+                "inputSchema": {
+                    "$ref": "#/definitions/tools.ParamSchema"
+                },
+                "name": {
                     "type": "string"
                 }
             }

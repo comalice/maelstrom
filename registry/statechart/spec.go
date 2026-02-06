@@ -359,6 +359,19 @@ func (s *YamlMachineSpec) resolveAction(hirer AgentHirer, actionSpec any) statec
 	}
 	// llm_with_tools dispatch
 	if toolActionMap, ok := content.(map[string]any); ok {
+		// Legacy support for {type: "llm"}
+		if typeI, hasType := toolActionMap["type"]; hasType && typeI == "llm" {
+			lwt := map[string]any{"tools": []any{}}
+			sys := getString(toolActionMap, "system")
+			if sys != "" {
+				lwt["system"] = sys
+			}
+			prm := getString(toolActionMap, "prompt")
+			if prm != "" {
+				lwt["prompt"] = prm
+			}
+			toolActionMap["llm_with_tools"] = lwt
+		}
 		lwtI, has := toolActionMap["llm_with_tools"]
 		if has {
 			lwtCfgI, _ := lwtI.(map[string]any)
@@ -383,21 +396,14 @@ func (s *YamlMachineSpec) resolveAction(hirer AgentHirer, actionSpec any) statec
 					}
 				}
 
-				toolsI := lwtCfg["tools"]
-				toolNamesI, hasTools := toolsI.([]any)
-				if !hasTools {
-					slog.Warn("llm_with_tools missing 'tools' array")
-					return nil
-				}
 				var toolNames []string
-				for _, ti := range toolNamesI {
-					if ts, ok := ti.(string); ok {
-						toolNames = append(toolNames, ts)
+				var hasTools bool
+				if toolsArr, ok := lwtCfg["tools"].([]any); ok {
+					for _, ti := range toolsArr {
+						if ts, ok := ti.(string); ok {
+							toolNames = append(toolNames, ts)
+						}
 					}
-				}
-				if len(toolNames) == 0 {
-					slog.Warn("no valid tool names in llm_with_tools")
-					return nil
 				}
 
 				var toolSchemas []tools.ToolSchema
@@ -408,14 +414,22 @@ func (s *YamlMachineSpec) resolveAction(hirer AgentHirer, actionSpec any) statec
 						slog.Warn("tool not found", "name", tn)
 					}
 				}
+				hasTools = len(toolSchemas) > 0
 
-				toolsJSONB, _ := json.MarshalIndent(toolSchemas, "", "  ")
-				toolsJSON := string(toolsJSONB)
-
-				systemPrompt := fmt.Sprintf("You have access to these tools. To use a tool, output ONLY {\"tool_use\": {\"name\": \"tool_name\", \"params\": {...}}}\n\n%s\n\nTool results provided next message.\n\nWhen finished, output JSON patch for context (no tool_use).", toolsJSON)
-
+				var systemPrompt string
+				if hasTools {
+					toolsJSONB, _ := json.MarshalIndent(toolSchemas, "", "  ")
+					toolsJSON := string(toolsJSONB)
+					systemPrompt = fmt.Sprintf("You have access to these tools. To use a tool, output ONLY {\"tool_use\": {\"name\": \"tool_name\", \"params\": {...}}}\n\n%s\n\nTool results provided next message.\n\nWhen finished, output JSON patch for context (no tool_use).", toolsJSON)
+				} else {
+					systemPrompt = `You are a helpful assistant.
+Reply ONLY with valid JSON: {"response": "your reply here"}. No other text or keys.`
+				}
 				if system != "" {
 					systemPrompt += "\n\n" + system
+				}
+				if !hasTools {
+					maxIter = 1
 				}
 
 				msgs := []string{systemPrompt, userPrompt}
@@ -429,7 +443,11 @@ func (s *YamlMachineSpec) resolveAction(hirer AgentHirer, actionSpec any) statec
 
 					var respMap map[string]any
 					if err := json.Unmarshal([]byte(resp), &respMap); err != nil {
-						slog.Warn("llm_with_tools non-JSON, try patch", "resp", resp[:300], "err", err)
+						trunc := resp
+						if len(resp) > 300 {
+							trunc = resp[:300] + "..."
+						}
+						slog.Warn("llm_with_tools non-JSON, try patch", "resp", trunc, "err", err)
 						var patch map[string]any
 						if jerr := json.Unmarshal([]byte(resp), &patch); jerr == nil {
 							mergeContextData(ctx, patch)
@@ -505,7 +523,11 @@ Example: {"key": "value", "count": 5}`, name, from, to, string(jsonCtxB), string
 		}
 		var patch map[string]any
 		if err := json.Unmarshal([]byte(resp), &patch); err != nil {
-			slog.Warn("Action JSON parse failed", "name", name, "resp", resp[:300]+"...", "err", err)
+			trunc := resp
+			if len(resp) > 300 {
+				trunc = resp[:300] + "..."
+			}
+			slog.Warn("Action JSON parse failed", "name", name, "resp", trunc, "err", err)
 			return nil
 		}
 		mergeContextData(ctx, patch)

@@ -18,9 +18,42 @@ definitions:
         type: object
       filename:
         type: string
+      tools:
+        items:
+          $ref: '#/definitions/tools.ToolSchema'
+        type: array
       type:
         type: string
       version:
+        type: string
+    type: object
+  tools.ParamProperty:
+    properties:
+      description:
+        type: string
+      type:
+        type: string
+    type: object
+  tools.ParamSchema:
+    properties:
+      properties:
+        additionalProperties:
+          $ref: '#/definitions/tools.ParamProperty'
+        type: object
+      required:
+        items:
+          type: string
+        type: array
+      type:
+        type: string
+    type: object
+  tools.ToolSchema:
+    properties:
+      description:
+        type: string
+      inputSchema:
+        $ref: '#/definitions/tools.ParamSchema'
+      name:
         type: string
     type: object
   v1.Request:

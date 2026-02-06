@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/comalice/maelstrom/internal/llm"
 	"github.com/comalice/statechartx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -211,4 +212,74 @@ states:
 	err := yaml.Unmarshal([]byte(yamlStr), &m)
 	require.NoError(t, err)
 	assert.True(t, m.States["parent"].States["child"].IsParallel)
+}
+
+func TestResolveAction(t *testing.T) {
+	tests := []struct {
+		name string
+		spec *YamlMachineSpec
+		specIn any
+		wantNil bool
+	}{
+		{
+			name: "nil",
+			specIn: nil,
+			wantNil: true,
+		},
+		{
+			name: "string_fallback",
+			specIn: "simple_string_action",
+			wantNil: false, // becomes LLM stub if LLM.Provider==""
+		},
+		{
+			name: "legacy_llm",
+			spec: &YamlMachineSpec{LLM: llm.LLMConfig{Provider: "anthropic"}},
+			specIn: map[string]any{
+				"type": "llm",
+				"system": "You are helpful.",
+				"prompt": "Respond to user.",
+			},
+			wantNil: false,
+		},
+		{
+			name: "empty_tools",
+			spec: &YamlMachineSpec{LLM: llm.LLMConfig{Provider: "anthropic"}},
+			specIn: map[string]any{
+				"llm_with_tools": map[string]any{
+					"tools": []any{},
+					"prompt": "JSON patch please.",
+				},
+			},
+			wantNil: false,
+		},
+		{
+			name: "toolful",
+			spec: &YamlMachineSpec{LLM: llm.LLMConfig{Provider: "anthropic"}},
+			specIn: map[string]any{
+				"llm_with_tools": map[string]any{
+					"tools": []any{"policy"},
+				},
+			},
+			wantNil: false,
+		},
+		{
+			name: "invalid_nonstring_nonmap",
+			specIn: map[string]any{"invalid": 123},
+			wantNil: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := tt.spec
+			if spec == nil {
+				spec = &YamlMachineSpec{}
+			}
+			action := spec.resolveAction(nil, tt.specIn)
+			if tt.wantNil {
+				assert.Nil(t, action)
+			} else {
+				assert.NotNil(t, action)
+			}
+		})
+	}
 }
